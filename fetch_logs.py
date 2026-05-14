@@ -9,6 +9,7 @@ Stores logs in DuckDB database for efficient querying.
 
 import argparse
 import json
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,11 @@ SSH_USER = ENV.get("ROUTER_SSH_USER", "")
 
 # AdGuard Home paths from .env
 ADGUARD_QUERY_LOG = ENV.get("ADGUARD_QUERY_LOG", "")
+DHCP_LEASES_PATH = ENV.get("DHCP_LEASES_PATH", "/var/lib/misc/dnsmasq.leases")
+
+# Transport mode: when no SSH host is configured, read files directly from
+# the local filesystem (e.g. when running on the same machine as AdGuard Home).
+USE_LOCAL = not SSH_HOST
 
 # Fetch settings
 # Default 5MB chunk size for reading remote files
@@ -61,12 +67,10 @@ FETCH_CHUNK_SIZE = int(ENV.get("FETCH_CHUNK_SIZE", "5242880"))
 def validate_config() -> bool:
     """Validate that required configuration is present."""
     missing = []
-    if not SSH_HOST:
-        missing.append("ROUTER_SSH_HOST")
-    if not SSH_USER:
-        missing.append("ROUTER_SSH_USER")
     if not ADGUARD_QUERY_LOG:
         missing.append("ADGUARD_QUERY_LOG")
+    if not USE_LOCAL and not SSH_USER:
+        missing.append("ROUTER_SSH_USER")
 
     if missing:
         print("Error: Missing required configuration in .env file:")
@@ -122,8 +126,23 @@ def ssh_command(cmd: str) -> tuple[int, str, str]:
     return result.returncode, result.stdout, result.stderr
 
 
+def _read_local_file(path: str, offset: int = 0, size: int = -1) -> Optional[str]:
+    """Read a local file, optionally a chunk starting at offset. None on error."""
+    try:
+        with open(path, "rb") as f:
+            if offset:
+                f.seek(offset)
+            data = f.read() if size < 0 else f.read(size)
+        return data.decode("utf-8", errors="replace")
+    except OSError:
+        return None
+
+
 def fetch_remote_file(remote_path: str) -> Optional[str]:
-    """Fetch contents of a remote file via SSH."""
+    """Fetch full contents of the source file (local or via SSH)."""
+    if USE_LOCAL:
+        content = _read_local_file(remote_path)
+        return content if content and content.strip() else None
     returncode, stdout, _ = ssh_command(f"cat '{remote_path}' 2>/dev/null")
     if returncode == 0 and stdout.strip():
         return stdout
@@ -131,13 +150,20 @@ def fetch_remote_file(remote_path: str) -> Optional[str]:
 
 
 def check_remote_file_exists(remote_path: str) -> bool:
-    """Check if a remote file exists via SSH."""
+    """Check if the source file exists (local or via SSH)."""
+    if USE_LOCAL:
+        return os.path.isfile(remote_path)
     returncode, _, _ = ssh_command(f"test -f '{remote_path}'")
     return returncode == 0
 
 
 def get_remote_file_size(remote_path: str) -> Optional[int]:
-    """Get the size of a remote file in bytes via SSH."""
+    """Get the size of the source file in bytes (local or via SSH)."""
+    if USE_LOCAL:
+        try:
+            return os.path.getsize(remote_path)
+        except OSError:
+            return None
     returncode, stdout, _ = ssh_command(f"wc -c < '{remote_path}' 2>/dev/null")
     if returncode == 0 and stdout.strip():
         try:
@@ -148,7 +174,14 @@ def get_remote_file_size(remote_path: str) -> Optional[int]:
 
 
 def get_remote_first_line(remote_path: str) -> Optional[str]:
-    """Get the first line of a remote file via SSH."""
+    """Get the first line of the source file (local or via SSH)."""
+    if USE_LOCAL:
+        try:
+            with open(remote_path, "r", encoding="utf-8", errors="replace") as f:
+                line = f.readline().strip()
+            return line if line else None
+        except OSError:
+            return None
     returncode, stdout, _ = ssh_command(f"head -1 '{remote_path}' 2>/dev/null")
     if returncode == 0 and stdout.strip():
         return stdout.strip()
@@ -165,7 +198,10 @@ def get_first_timestamp(line: str, timestamp_field: str) -> Optional[str]:
 
 
 def fetch_remote_file_from_offset(remote_path: str, offset: int) -> Optional[str]:
-    """Fetch contents of a remote file starting from a byte offset via SSH."""
+    """Fetch source file contents starting from a byte offset (local or via SSH)."""
+    if USE_LOCAL:
+        content = _read_local_file(remote_path, offset)
+        return content if content else None
     returncode, stdout, _ = ssh_command(f"tail -c +{offset + 1} '{remote_path}' 2>/dev/null")
     if returncode == 0 and stdout:
         return stdout
@@ -174,16 +210,18 @@ def fetch_remote_file_from_offset(remote_path: str, offset: int) -> Optional[str
 
 def fetch_remote_chunk(remote_path: str, offset: int, size: int) -> Optional[str]:
     """
-    Fetch a chunk of a remote file via SSH.
+    Fetch a chunk of the source file (local or via SSH).
 
     Args:
-        remote_path: Path to the remote file
+        remote_path: Path to the source file
         offset: Byte offset to start reading from
         size: Number of bytes to read
 
     Returns:
         The chunk content as a string, or None if read failed
     """
+    if USE_LOCAL:
+        return _read_local_file(remote_path, offset, size)
     # tail -c +N gives bytes from position N to end
     # head -c M limits output to M bytes
     cmd = f"tail -c +{offset + 1} '{remote_path}' 2>/dev/null | head -c {size}"
@@ -516,15 +554,25 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
 
 def fetch_client_names_from_router() -> dict[str, str]:
     """
-    Fetch client name mappings from router DHCP leases.
+    Fetch client name mappings from DHCP leases.
+    Reads from DHCP_LEASES_PATH (local file or via SSH depending on mode).
     Returns dict mapping IP addresses to hostnames.
     """
     ip_to_hostname = {}
 
-    # Try to fetch DHCP leases
-    returncode, stdout, _ = ssh_command("cat /var/lib/misc/dnsmasq.leases 2>/dev/null")
-    if returncode == 0 and stdout.strip():
-        for line in stdout.strip().split("\n"):
+    # Read DHCP leases file
+    leases_content = ""
+    if USE_LOCAL:
+        content = _read_local_file(DHCP_LEASES_PATH)
+        if content:
+            leases_content = content
+    else:
+        returncode, stdout, _ = ssh_command(f"cat '{DHCP_LEASES_PATH}' 2>/dev/null")
+        if returncode == 0:
+            leases_content = stdout
+
+    if leases_content.strip():
+        for line in leases_content.strip().split("\n"):
             parts = line.split()
             if len(parts) >= 4:
                 ip = parts[2]
@@ -532,17 +580,18 @@ def fetch_client_names_from_router() -> dict[str, str]:
                 if hostname != "*":
                     ip_to_hostname[ip] = hostname
 
-    # Also try nvram dhcp_staticlist for static assignments
-    returncode, stdout, _ = ssh_command("nvram get dhcp_staticlist 2>/dev/null")
-    if returncode == 0 and stdout.strip():
-        entries = stdout.strip().split("<")
-        for entry in entries:
-            if ">" in entry:
-                parts = entry.split(">")
-                if len(parts) >= 3:
-                    mac, ip, hostname = parts[0], parts[1], parts[2]
-                    if hostname and ip:
-                        ip_to_hostname[ip] = hostname
+    # nvram dhcp_staticlist is router-specific (Asus, etc.); only meaningful via SSH
+    if not USE_LOCAL:
+        returncode, stdout, _ = ssh_command("nvram get dhcp_staticlist 2>/dev/null")
+        if returncode == 0 and stdout.strip():
+            entries = stdout.strip().split("<")
+            for entry in entries:
+                if ">" in entry:
+                    parts = entry.split(">")
+                    if len(parts) >= 3:
+                        mac, ip, hostname = parts[0], parts[1], parts[2]
+                        if hostname and ip:
+                            ip_to_hostname[ip] = hostname
 
     return ip_to_hostname
 
@@ -552,6 +601,10 @@ def display_status(history: dict) -> None:
     print("\n" + "=" * 60)
     print("AdGuard Home Log Fetcher")
     print("=" * 60)
+    if USE_LOCAL:
+        print(f"Source: local filesystem ({ADGUARD_QUERY_LOG})")
+    else:
+        print(f"Source: SSH ({SSH_USER}@{SSH_HOST}:{SSH_PORT})")
     print("\nAvailable log types:\n")
 
     for log_name, log_config in ADGUARD_LOGS.items():
