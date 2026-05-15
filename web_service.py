@@ -24,6 +24,8 @@ from database import (
     add_ignored_domain, remove_ignored_domain, get_ignored_domains,
     dashboard_headline, dashboard_queries_over_time,
     dashboard_first_seen, dashboard_top_filter_rules,
+    dashboard_top_blocked_clients, dashboard_top_blocked_domains,
+    dashboard_query_type_distribution, dashboard_suspicious_subdomains,
 )
 
 # Load .env configuration
@@ -370,6 +372,46 @@ async def api_dashboard_top_filter_rules(
 ):
     try:
         return dashboard_top_filter_rules(days=days, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/top-blocked-clients")
+async def api_dashboard_top_blocked_clients(
+    days: int = Query(7, ge=1, le=90, description="Lookback window in days"),
+    limit: int = Query(10, ge=1, le=100, description="Max rows to return"),
+):
+    try:
+        return dashboard_top_blocked_clients(days=days, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/top-blocked-domains")
+async def api_dashboard_top_blocked_domains(
+    days: int = Query(7, ge=1, le=90, description="Lookback window in days"),
+    limit: int = Query(10, ge=1, le=100, description="Max rows to return"),
+):
+    try:
+        return dashboard_top_blocked_domains(days=days, limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/query-types")
+async def api_dashboard_query_types():
+    try:
+        return dashboard_query_type_distribution()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/suspicious-subdomains")
+async def api_dashboard_suspicious_subdomains(
+    limit: int = Query(15, ge=1, le=100, description="Max rows to return"),
+):
+    try:
+        return dashboard_suspicious_subdomains(limit=limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

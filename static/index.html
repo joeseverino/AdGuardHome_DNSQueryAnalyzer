@@ -589,6 +589,19 @@
             display: grid;
             grid-template-columns: 2fr 1fr;
             gap: 16px;
+            margin-bottom: 16px;
+        }
+        .dash-row-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+        .dash-row-3 {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
         }
         .dash-card-full { grid-column: 1 / -1; }
         .dash-card-title {
@@ -655,6 +668,34 @@
         }
         .dash-badge.blocked { color: #b91c1c; background: #fee2e2; }
         .dash-badge.allowed { color: #15803d; background: #dcfce7; }
+        .dash-badge.warn    { color: #92400e; background: #fef3c7; }
+
+        .dash-meta {
+            font-size: 11px;
+            color: #6b7280;
+            font-variant-numeric: tabular-nums;
+        }
+        .dash-meta .sep { margin: 0 6px; color: #d1d5db; }
+
+        .dash-mono {
+            font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+            font-size: 12px;
+            color: #111827;
+            word-break: break-all;
+        }
+        .dash-mini-bar {
+            height: 4px;
+            background: #f3f4f6;
+            border-radius: 2px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .dash-mini-bar > span {
+            display: block;
+            height: 100%;
+            background: #ef4444;
+            border-radius: 2px;
+        }
         .dash-empty {
             color: #9ca3af;
             font-size: 13px;
@@ -671,7 +712,7 @@
 
         @media (max-width: 900px) {
             .dash-grid { grid-template-columns: repeat(2, 1fr); }
-            .dash-main { grid-template-columns: 1fr; }
+            .dash-main, .dash-row-2, .dash-row-3 { grid-template-columns: 1fr; }
         }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -728,7 +769,7 @@
                 <div class="dash-chart-wrap"><canvas id="chart-queries-over-time"></canvas></div>
             </div>
 
-            <div class="dash-main">
+            <div class="dash-row-2">
                 <div class="dash-card">
                     <div class="dash-card-title">First-Seen Domains Today</div>
                     <div class="dash-card-subtitle">Base domains observed for the first time today — worth a glance before you trust them</div>
@@ -737,9 +778,39 @@
                     </ul>
                 </div>
                 <div class="dash-card">
-                    <div class="dash-card-title">Top Filter Rules (7d)</div>
-                    <div class="dash-card-subtitle">Which blocklist rules are pulling weight</div>
-                    <div class="dash-chart-wrap"><canvas id="chart-top-rules"></canvas></div>
+                    <div class="dash-card-title">Top Blocked Clients (7d)</div>
+                    <div class="dash-card-subtitle">Devices generating the most blocked queries — chatty trackers or potentially compromised</div>
+                    <ul class="dash-list" id="list-top-blocked-clients">
+                        <li class="dash-loading">Loading…</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="dash-card dash-card-full" style="margin-bottom: 16px;">
+                <div class="dash-card-title">Top Filter Rules (7d)</div>
+                <div class="dash-card-subtitle">Blocklist rules pulling the most weight — `||` prefix and `^` suffix are AdGuard match syntax, stripped for readability</div>
+                <div class="dash-chart-wrap" style="height: 320px;"><canvas id="chart-top-rules"></canvas></div>
+            </div>
+
+            <div class="dash-row-3">
+                <div class="dash-card">
+                    <div class="dash-card-title">Top Blocked Domains (7d)</div>
+                    <div class="dash-card-subtitle">Specific destinations your devices keep trying to reach</div>
+                    <ul class="dash-list" id="list-top-blocked-domains">
+                        <li class="dash-loading">Loading…</li>
+                    </ul>
+                </div>
+                <div class="dash-card">
+                    <div class="dash-card-title">Query Type Mix (today)</div>
+                    <div class="dash-card-subtitle">Healthy networks are mostly A / AAAA / HTTPS. TXT spikes are a DNS-tunneling tell.</div>
+                    <div class="dash-chart-wrap" style="height: 240px;"><canvas id="chart-query-types"></canvas></div>
+                </div>
+                <div class="dash-card">
+                    <div class="dash-card-title">Suspicious Subdomains (today)</div>
+                    <div class="dash-card-subtitle">Queries with structural indicators of tunneling or DGAs — long names or deep subdomain depth</div>
+                    <ul class="dash-list" id="list-suspicious-subdomains">
+                        <li class="dash-loading">Loading…</li>
+                    </ul>
                 </div>
             </div>
         </div>
@@ -1818,19 +1889,38 @@
 
         async function loadDashboard() {
             try {
-                const [headline, qot, firstSeen, rules] = await Promise.all([
+                const [headline, qot, firstSeen, rules, blockedClients, blockedDomains, qtypes, susp] = await Promise.all([
                     fetch('/api/dashboard/headline').then(r => r.json()),
                     fetch('/api/dashboard/queries-over-time?days=30').then(r => r.json()),
                     fetch('/api/dashboard/first-seen?limit=15').then(r => r.json()),
-                    fetch('/api/dashboard/top-filter-rules?days=7&limit=10').then(r => r.json()),
+                    fetch('/api/dashboard/top-filter-rules?days=7&limit=12').then(r => r.json()),
+                    fetch('/api/dashboard/top-blocked-clients?days=7&limit=10').then(r => r.json()),
+                    fetch('/api/dashboard/top-blocked-domains?days=7&limit=12').then(r => r.json()),
+                    fetch('/api/dashboard/query-types').then(r => r.json()),
+                    fetch('/api/dashboard/suspicious-subdomains?limit=15').then(r => r.json()),
                 ]);
                 renderHeadline(headline);
                 renderQueriesOverTime(qot);
                 renderFirstSeen(firstSeen);
                 renderTopRules(rules);
+                renderTopBlockedClients(blockedClients);
+                renderTopBlockedDomains(blockedDomains);
+                renderQueryTypes(qtypes);
+                renderSuspiciousSubdomains(susp);
             } catch (e) {
                 console.error('Dashboard load failed:', e);
             }
+        }
+
+        function cleanRule(rule) {
+            return rule.replace(/^\|\|/, '').replace(/\^$/, '');
+        }
+
+        function truncMid(s, max) {
+            if (!s || s.length <= max) return s;
+            const head = Math.ceil((max - 1) / 2);
+            const tail = Math.floor((max - 1) / 2);
+            return s.slice(0, head) + '…' + s.slice(s.length - tail);
         }
 
         function dashFmtNum(n) { return new Intl.NumberFormat().format(n); }
@@ -1979,8 +2069,9 @@
                 el.parentElement.innerHTML = '<div class="dash-empty">No filter hits in the last 7 days.</div>';
                 return;
             }
-            const labels = d.items.map(i => i.rule.length > 36 ? i.rule.slice(0, 33) + '…' : i.rule);
+            const labels = d.items.map(i => truncMid(cleanRule(i.rule), 44));
             const data = d.items.map(i => i.hits);
+            const clientsAffected = d.items.map(i => i.clients_affected);
             DASH.charts.rules = new Chart(el, {
                 type: 'bar',
                 data: {
@@ -1996,18 +2087,137 @@
                     indexAxis: 'y',
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
+                    layout: { padding: { left: 4, right: 20 } },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                afterLabel: (ctx) => `Clients: ${clientsAffected[ctx.dataIndex]}`,
+                            },
+                        },
+                    },
                     scales: {
-                        x: { beginAtZero: true, ticks: { font: { size: 10 } } },
+                        x: { beginAtZero: true, grid: { color: '#f1f5f9' }, ticks: { font: { size: 10 } } },
                         y: {
+                            grid: { display: false },
                             ticks: {
-                                font: { size: 10, family: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+                                font: { size: 11, family: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
                                 autoSkip: false,
+                                color: '#374151',
                             },
                         },
                     },
                 },
             });
+        }
+
+        function renderTopBlockedClients(d) {
+            const ul = document.getElementById('list-top-blocked-clients');
+            if (!d.items || d.items.length === 0) {
+                ul.innerHTML = '<li class="dash-empty">No blocked queries in the last 7 days.</li>';
+                return;
+            }
+            const max = d.items[0].blocks || 1;
+            ul.innerHTML = d.items.map(it => {
+                const label = (it.client && it.client !== it.ip) ? `${it.client} · ${it.ip}` : it.ip;
+                const pctBar = Math.max(2, (it.blocks / max) * 100);
+                return `<li>
+                    <div>
+                        <div class="dash-mono">${dashEscape(label)}</div>
+                        <div class="dash-meta">
+                            ${it.block_pct}% blocked
+                            <span class="sep">·</span>${dashFmtNum(it.unique_blocked_domains)} domains
+                            <span class="sep">·</span>${dashFmtNum(it.total)} total
+                        </div>
+                        <div class="dash-mini-bar"><span style="width:${pctBar.toFixed(1)}%"></span></div>
+                    </div>
+                    <div class="count">${dashFmtNum(it.blocks)}</div>
+                </li>`;
+            }).join('');
+        }
+
+        function renderTopBlockedDomains(d) {
+            const ul = document.getElementById('list-top-blocked-domains');
+            if (!d.items || d.items.length === 0) {
+                ul.innerHTML = '<li class="dash-empty">No blocked queries in the last 7 days.</li>';
+                return;
+            }
+            ul.innerHTML = d.items.map(it => {
+                return `<li>
+                    <div>
+                        <div><span class="dash-badge blocked">blocked</span><span class="domain">${dashEscape(truncMid(it.domain, 56))}</span></div>
+                        <div class="dash-meta">${dashFmtNum(it.clients_affected)} client${it.clients_affected === 1 ? '' : 's'} · rule: <code>${dashEscape(cleanRule(it.sample_rule || ''))}</code></div>
+                    </div>
+                    <div class="count">${dashFmtNum(it.hits)}</div>
+                </li>`;
+            }).join('');
+        }
+
+        const QTYPE_COLORS = {
+            A: '#4a90d9', AAAA: '#6366f1', HTTPS: '#a855f7',
+            PTR: '#6b7280', TXT: '#f59e0b', MX: '#06b6d4',
+            SRV: '#14b8a6', SOA: '#8b5cf6', CNAME: '#10b981',
+            NS: '#0ea5e9', ANY: '#ec4899',
+        };
+
+        function renderQueryTypes(d) {
+            const el = document.getElementById('chart-query-types');
+            if (DASH.charts.qtype) DASH.charts.qtype.destroy();
+            if (!d.items || d.items.length === 0) {
+                el.parentElement.innerHTML = '<div class="dash-empty">No queries today.</div>';
+                return;
+            }
+            const labels = d.items.map(i => i.type);
+            const data = d.items.map(i => i.hits);
+            const colors = labels.map(t => QTYPE_COLORS[t] || '#9ca3af');
+            DASH.charts.qtype = new Chart(el, {
+                type: 'doughnut',
+                data: {
+                    labels,
+                    datasets: [{ data, backgroundColor: colors, borderColor: '#fff', borderWidth: 2 }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '60%',
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { boxWidth: 10, boxHeight: 10, font: { size: 11 }, padding: 8 },
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: (ctx) => {
+                                    const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
+                                    const pct = total ? (ctx.parsed / total * 100).toFixed(1) : '0';
+                                    return `${ctx.label}: ${dashFmtNum(ctx.parsed)} (${pct}%)`;
+                                },
+                            },
+                        },
+                    },
+                },
+            });
+        }
+
+        function renderSuspiciousSubdomains(d) {
+            const ul = document.getElementById('list-suspicious-subdomains');
+            if (!d.items || d.items.length === 0) {
+                ul.innerHTML = '<li class="dash-empty">Nothing structurally suspicious today.</li>';
+                return;
+            }
+            ul.innerHTML = d.items.map(it => {
+                const badge = it.was_filtered
+                    ? '<span class="dash-badge blocked">blocked</span>'
+                    : '<span class="dash-badge warn">allowed</span>';
+                const clientLabel = (it.client && it.client !== it.ip) ? `${it.client} · ${it.ip}` : it.ip;
+                return `<li>
+                    <div>
+                        <div>${badge}<span class="domain">${dashEscape(truncMid(it.domain, 52))}</span></div>
+                        <div class="dash-meta">${it.length} chars · ${it.dots} dots · ${dashEscape(clientLabel)}</div>
+                    </div>
+                    <div class="count">${dashFmtNum(it.hits)}</div>
+                </li>`;
+            }).join('');
         }
 
         // Initial dashboard load on first paint

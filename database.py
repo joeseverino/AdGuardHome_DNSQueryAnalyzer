@@ -146,7 +146,11 @@ def parse_timestamp(ts_str: str) -> tuple[datetime, str]:
                 ts_str = f"{base}.{fractional}{tz}"
 
         dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-        date_str = dt.strftime('%Y-%m-%d')
+        # Normalize to system local TZ before extracting the date. Without
+        # this, UTC-stamped queries logged late evening local time become
+        # next-day rows in the DB and break "today" comparisons in the UI.
+        # The container's TZ env var controls what "local" means.
+        date_str = dt.astimezone().strftime('%Y-%m-%d')
         return dt, date_str
     except Exception:
         # Fallback: try to extract date from string
@@ -1245,6 +1249,190 @@ def dashboard_top_filter_rules(days: int = 7, limit: int = 15) -> dict:
                     "rule": r[0],
                     "hits": int(r[1]),
                     "clients_affected": int(r[2]),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_top_blocked_clients(days: int = 7, limit: int = 10) -> dict:
+    """
+    Clients ranked by blocked-query volume over the window.
+
+    A "blocked" query is one the filter matched (is_filtered = TRUE). High
+    counts here mean either (a) the device is chatty toward ad/tracker/
+    telemetry endpoints, or (b) something is misbehaving and worth a look.
+    Both are useful signals.
+    """
+    if days < 1:
+        days = 1
+    if days > 90:
+        days = 90
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            SELECT
+                COALESCE(NULLIF(client, ''), ip) AS name,
+                ip,
+                SUM(CASE WHEN is_filtered THEN count ELSE 0 END) AS blocks,
+                SUM(count) AS total,
+                COUNT(DISTINCT CASE WHEN is_filtered THEN domain END) AS unique_blocked_domains
+            FROM query_logs
+            WHERE date >= CURRENT_DATE - {days}
+            GROUP BY name, ip
+            HAVING SUM(CASE WHEN is_filtered THEN count ELSE 0 END) > 0
+            ORDER BY blocks DESC
+            LIMIT {limit}
+        """).fetchall()
+        return {
+            "window_days": days,
+            "items": [
+                {
+                    "client": r[0],
+                    "ip": r[1],
+                    "blocks": int(r[2]),
+                    "total": int(r[3]),
+                    "block_pct": round(r[2] / r[3] * 100.0, 1) if r[3] else 0.0,
+                    "unique_blocked_domains": int(r[4]),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_top_blocked_domains(days: int = 7, limit: int = 10) -> dict:
+    """
+    Specific destinations that were blocked the most over the window.
+
+    Distinct from top filter rules: one rule like `||doubleclick.net^` can
+    block many subdomains; this surfaces the actual subdomains your devices
+    are reaching for. Useful for "what's my network *actually* talking to
+    that I don't want it to."
+    """
+    if days < 1:
+        days = 1
+    if days > 90:
+        days = 90
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            SELECT
+                domain,
+                SUM(count) AS hits,
+                COUNT(DISTINCT ip) AS clients_affected,
+                MAX(filter_rule) AS sample_rule
+            FROM query_logs
+            WHERE date >= CURRENT_DATE - {days}
+              AND is_filtered = TRUE
+              AND domain != ''
+            GROUP BY domain
+            ORDER BY hits DESC
+            LIMIT {limit}
+        """).fetchall()
+        return {
+            "window_days": days,
+            "items": [
+                {
+                    "domain": r[0],
+                    "hits": int(r[1]),
+                    "clients_affected": int(r[2]),
+                    "sample_rule": r[3] or "",
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_query_type_distribution() -> dict:
+    """
+    DNS record-type mix for today.
+
+    A healthy modern network is mostly A + AAAA + HTTPS. Unusual spikes in
+    TXT, NULL, or rare types are a classic DNS-tunneling tell. The chart
+    just shows the mix; you read the anomalies.
+    """
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT
+                COALESCE(NULLIF(query_type, ''), '?') AS type,
+                SUM(count) AS hits
+            FROM query_logs
+            WHERE date = CURRENT_DATE
+            GROUP BY type
+            ORDER BY hits DESC
+        """).fetchall()
+        return {
+            "items": [
+                {"type": r[0], "hits": int(r[1])}
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_suspicious_subdomains(limit: int = 15) -> dict:
+    """
+    Today's queries with structural indicators of potential DNS tunneling
+    or DGA-like behavior:
+      - Total domain length > 60 chars
+      - 7+ dot-segments (deep subdomain nesting)
+
+    These are coarse heuristics — most hits are CDN noise and false positives.
+    The point is to make the long-tail visible so a human can eyeball it.
+    Real detection comes from entropy + n-gram scoring (iteration 2).
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            SELECT
+                domain,
+                LENGTH(domain) AS domain_length,
+                LENGTH(domain) - LENGTH(REPLACE(domain, '.', '')) AS dot_count,
+                ip,
+                COALESCE(NULLIF(client, ''), ip) AS client_name,
+                SUM(count) AS hits,
+                BOOL_OR(is_filtered) AS was_filtered
+            FROM query_logs
+            WHERE date = CURRENT_DATE
+              AND (
+                LENGTH(domain) > 60
+                OR (LENGTH(domain) - LENGTH(REPLACE(domain, '.', ''))) >= 7
+              )
+              AND domain NOT IN (SELECT domain FROM ignored_domains)
+            GROUP BY domain, ip, client_name
+            ORDER BY domain_length DESC, hits DESC
+            LIMIT {limit}
+        """).fetchall()
+        return {
+            "items": [
+                {
+                    "domain": r[0],
+                    "length": int(r[1]),
+                    "dots": int(r[2]),
+                    "ip": r[3],
+                    "client": r[4],
+                    "hits": int(r[5]),
+                    "was_filtered": bool(r[6]),
                 }
                 for r in rows
             ],
