@@ -21,7 +21,9 @@ from database import (
     init_database, query_client_summary,
     query_domain_summary, query_base_domain_summary, get_database_stats,
     delete_logs_before_date, delete_logs_by_domain,
-    add_ignored_domain, remove_ignored_domain, get_ignored_domains
+    add_ignored_domain, remove_ignored_domain, get_ignored_domains,
+    dashboard_headline, dashboard_queries_over_time,
+    dashboard_first_seen, dashboard_top_filter_rules,
 )
 
 # Load .env configuration
@@ -328,6 +330,46 @@ async def api_remove_ignored_domain(domain: str):
                 success=False,
                 message=f"Domain '{domain}' not found in ignored domains"
             )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Dashboard endpoints
+@app.get("/api/dashboard/headline")
+async def api_dashboard_headline():
+    try:
+        return dashboard_headline()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/queries-over-time")
+async def api_dashboard_queries_over_time(
+    days: int = Query(30, ge=1, le=365, description="Number of days to include"),
+):
+    try:
+        return dashboard_queries_over_time(days=days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/first-seen")
+async def api_dashboard_first_seen(
+    limit: int = Query(50, ge=1, le=500, description="Max rows to return"),
+):
+    try:
+        return dashboard_first_seen(limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/dashboard/top-filter-rules")
+async def api_dashboard_top_filter_rules(
+    days: int = Query(7, ge=1, le=90, description="Lookback window in days"),
+    limit: int = Query(15, ge=1, le=100, description="Max rows to return"),
+):
+    try:
+        return dashboard_top_filter_rules(days=days, limit=limit)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

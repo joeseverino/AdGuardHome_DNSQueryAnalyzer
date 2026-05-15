@@ -998,6 +998,261 @@ def get_ignored_domains_set() -> set[str]:
     return {row[0] for row in results}
 
 
+# ============================================================================
+# Dashboard Queries
+# ============================================================================
+#
+# These power the at-a-glance landing-page dashboard. All queries operate on
+# the existing condensed `query_logs` table and the `ignored_domains` table.
+# Daily granularity is the limit of the source data, so all "24h" framing is
+# really "today vs yesterday."
+#
+# Base domain extraction in SQL is approximate (last two dot-segments) — it
+# matches `extract_base_domain()` for typical cases but diverges on multi-part
+# public-suffix TLDs (e.g. `co.uk`, `amazonaws.com`). Acceptable tradeoff for
+# v1 to keep these queries pure SQL.
+
+
+_BASE_DOMAIN_SQL = "regexp_extract(domain, '([^.]+\\.[^.]+)$')"
+
+
+def dashboard_headline() -> dict:
+    """
+    Return KPI tiles for the dashboard hero row.
+
+    Each tile carries a current value, a delta vs the prior period, and a
+    30-day sparkline. Sparklines are zero-filled for missing days.
+    """
+    conn = get_connection()
+    try:
+        # Today + yesterday rollups in one trip
+        row = conn.execute("""
+            SELECT
+                COALESCE(SUM(CASE WHEN date = CURRENT_DATE THEN count END), 0) AS q_today,
+                COALESCE(SUM(CASE WHEN date = CURRENT_DATE - 1 THEN count END), 0) AS q_yest,
+                COALESCE(SUM(CASE WHEN date = CURRENT_DATE AND is_filtered THEN count END), 0) AS b_today,
+                COALESCE(SUM(CASE WHEN date = CURRENT_DATE - 1 AND is_filtered THEN count END), 0) AS b_yest,
+                COUNT(DISTINCT CASE WHEN date = CURRENT_DATE THEN ip END) AS c_today,
+                COUNT(DISTINCT CASE WHEN date = CURRENT_DATE - 1 THEN ip END) AS c_yest
+            FROM query_logs
+            WHERE date >= CURRENT_DATE - 1
+        """).fetchone()  # headline today+yesterday rollup
+        q_today, q_yest, b_today, b_yest, c_today, c_yest = row
+
+        # 30-day sparkline series, zero-filled for missing days
+        spark_rows = conn.execute("""
+            WITH series AS (
+                SELECT (CURRENT_DATE - i::INTEGER) AS date FROM range(0, 30) t(i)
+            )
+            SELECT
+                s.date,
+                COALESCE(SUM(q.count), 0) AS total,
+                COALESCE(SUM(CASE WHEN q.is_filtered THEN q.count ELSE 0 END), 0) AS blocked,
+                COUNT(DISTINCT q.ip) AS clients
+            FROM series s
+            LEFT JOIN query_logs q ON q.date = s.date
+            GROUP BY s.date
+            ORDER BY s.date ASC
+        """).fetchall()
+
+        queries_spark = [r[1] for r in spark_rows]
+        block_rate_spark = [
+            (r[2] / r[1] * 100.0) if r[1] else 0.0 for r in spark_rows
+        ]
+        clients_spark = [r[3] for r in spark_rows]
+
+        # New base domains first seen today (excluding ignored)
+        new_today_row = conn.execute(f"""
+            WITH base AS (
+                SELECT {_BASE_DOMAIN_SQL} AS base_domain, MIN(date) AS first_seen
+                FROM query_logs
+                WHERE domain LIKE '%.%'
+                  AND domain NOT IN (SELECT domain FROM ignored_domains)
+                GROUP BY 1
+            )
+            SELECT COUNT(*) FROM base
+            WHERE first_seen = CURRENT_DATE AND base_domain != ''
+        """).fetchone()
+        new_today = new_today_row[0] if new_today_row else 0
+
+        def pct_delta(curr, prev):
+            if prev == 0:
+                return None
+            return round((curr - prev) / prev * 100.0, 1)
+
+        block_rate_today = (b_today / q_today * 100.0) if q_today else 0.0
+        block_rate_yest = (b_yest / q_yest * 100.0) if q_yest else 0.0
+
+        return {
+            "queries_today": {
+                "value": int(q_today),
+                "delta_pct": pct_delta(q_today, q_yest),
+                "sparkline": queries_spark,
+            },
+            "block_rate": {
+                "value": round(block_rate_today, 2),
+                "blocked": int(b_today),
+                "allowed": int(q_today - b_today),
+                "delta_pct": pct_delta(block_rate_today, block_rate_yest),
+                "sparkline": [round(x, 2) for x in block_rate_spark],
+            },
+            "active_clients_today": {
+                "value": int(c_today),
+                "delta_pct": pct_delta(c_today, c_yest),
+                "sparkline": clients_spark,
+            },
+            "new_domains_today": {
+                "value": int(new_today),
+            },
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_queries_over_time(days: int = 30) -> dict:
+    """
+    Daily query counts split by allowed vs blocked, zero-filled.
+
+    Args:
+        days: Number of days to include, ending today.
+    """
+    if days < 1:
+        days = 1
+    if days > 365:
+        days = 365
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            WITH series AS (
+                SELECT (CURRENT_DATE - i::INTEGER) AS date FROM range(0, {days}) t(i)
+            )
+            SELECT
+                s.date,
+                COALESCE(SUM(CASE WHEN NOT q.is_filtered THEN q.count ELSE 0 END), 0) AS allowed,
+                COALESCE(SUM(CASE WHEN q.is_filtered THEN q.count ELSE 0 END), 0) AS blocked
+            FROM series s
+            LEFT JOIN query_logs q ON q.date = s.date
+            GROUP BY s.date
+            ORDER BY s.date ASC
+        """).fetchall()
+        return {
+            "dates": [str(r[0]) for r in rows],
+            "allowed": [int(r[1]) for r in rows],
+            "blocked": [int(r[2]) for r in rows],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_first_seen(limit: int = 50) -> dict:
+    """
+    Base domains that were first observed today, grouped by client+domain.
+
+    This is the security-analyst panel: "what just started talking that has
+    never talked before?" Excludes domains on the ignore list.
+    """
+    if limit < 1:
+        limit = 1
+    if limit > 500:
+        limit = 500
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            WITH base AS (
+                SELECT
+                    client,
+                    ip,
+                    {_BASE_DOMAIN_SQL} AS base_domain,
+                    date,
+                    is_filtered,
+                    count
+                FROM query_logs
+                WHERE domain LIKE '%.%'
+                  AND domain NOT IN (SELECT domain FROM ignored_domains)
+            ),
+            first_seen AS (
+                SELECT client, ip, base_domain, MIN(date) AS first_seen_date
+                FROM base
+                WHERE base_domain != ''
+                GROUP BY client, ip, base_domain
+            )
+            SELECT
+                COALESCE(NULLIF(fs.client, ''), fs.ip) AS client_name,
+                fs.ip,
+                fs.base_domain,
+                fs.first_seen_date,
+                COALESCE(SUM(b.count), 0) AS count_total,
+                BOOL_OR(b.is_filtered) AS was_filtered_any
+            FROM first_seen fs
+            LEFT JOIN base b USING (client, ip, base_domain)
+            WHERE fs.first_seen_date = CURRENT_DATE
+            GROUP BY fs.client, fs.ip, fs.base_domain, fs.first_seen_date
+            ORDER BY count_total DESC
+            LIMIT {limit}
+        """).fetchall()
+        return {
+            "items": [
+                {
+                    "client": r[0],
+                    "ip": r[1],
+                    "base_domain": r[2],
+                    "first_seen": str(r[3]),
+                    "count": int(r[4]),
+                    "was_filtered": bool(r[5]),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def dashboard_top_filter_rules(days: int = 7, limit: int = 15) -> dict:
+    """
+    Top filter rules by total hits over the window.
+
+    Surfaces which blocklist rules are pulling weight, and inversely makes it
+    easier to spot rules that *aren't* firing (low position vs expectation).
+    """
+    if days < 1:
+        days = 1
+    if days > 90:
+        days = 90
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+    conn = get_connection()
+    try:
+        rows = conn.execute(f"""
+            SELECT
+                filter_rule,
+                SUM(count) AS hits,
+                COUNT(DISTINCT ip) AS clients_affected
+            FROM query_logs
+            WHERE is_filtered = TRUE
+              AND date >= CURRENT_DATE - {days}
+              AND filter_rule IS NOT NULL
+              AND filter_rule != ''
+            GROUP BY filter_rule
+            ORDER BY hits DESC
+            LIMIT {limit}
+        """).fetchall()
+        return {
+            "window_days": days,
+            "items": [
+                {
+                    "rule": r[0],
+                    "hits": int(r[1]),
+                    "clients_affected": int(r[2]),
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     # Initialize database when run directly
     init_database()

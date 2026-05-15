@@ -520,7 +520,161 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        /* ============================================ */
+        /* Dashboard                                    */
+        /* ============================================ */
+        #dashboard-panel { padding: 0; }
+
+        .dash-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        .dash-card {
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 18px 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+            border: 1px solid #e5e7eb;
+            position: relative;
+            overflow: hidden;
+        }
+        .dash-card.accent-blue  { border-left: 3px solid #4a90d9; }
+        .dash-card.accent-green { border-left: 3px solid #22c55e; }
+        .dash-card.accent-red   { border-left: 3px solid #ef4444; }
+        .dash-card.accent-amber { border-left: 3px solid #f59e0b; }
+
+        .kpi-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #6b7280;
+            font-weight: 600;
+            margin-bottom: 6px;
+        }
+        .kpi-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #111827;
+            line-height: 1.1;
+            font-variant-numeric: tabular-nums;
+        }
+        .kpi-sub {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+            min-height: 16px;
+        }
+        .kpi-delta {
+            display: inline-block;
+            margin-left: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            vertical-align: middle;
+        }
+        .kpi-delta.up   { color: #16a34a; background: #dcfce7; }
+        .kpi-delta.down { color: #dc2626; background: #fee2e2; }
+        .kpi-delta.flat { color: #6b7280; background: #f3f4f6; }
+        .kpi-spark {
+            height: 36px !important;
+            width: 100% !important;
+            margin-top: 10px;
+        }
+
+        .dash-main {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 16px;
+        }
+        .dash-card-full { grid-column: 1 / -1; }
+        .dash-card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #111827;
+            margin: 0 0 2px 0;
+        }
+        .dash-card-subtitle {
+            font-size: 12px;
+            color: #6b7280;
+            margin: 0 0 14px 0;
+        }
+        .dash-chart-wrap {
+            height: 280px;
+            position: relative;
+        }
+
+        .dash-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            font-size: 13px;
+            max-height: 280px;
+            overflow-y: auto;
+        }
+        .dash-list li {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .dash-list li:last-child { border-bottom: none; }
+        .dash-list .domain {
+            font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+            font-size: 12px;
+            color: #111827;
+            word-break: break-all;
+        }
+        .dash-list .client {
+            font-size: 11px;
+            color: #6b7280;
+            margin-top: 2px;
+        }
+        .dash-list .count {
+            font-variant-numeric: tabular-nums;
+            color: #111827;
+            font-weight: 600;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .dash-badge {
+            display: inline-block;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-weight: 700;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-right: 6px;
+            vertical-align: middle;
+        }
+        .dash-badge.blocked { color: #b91c1c; background: #fee2e2; }
+        .dash-badge.allowed { color: #15803d; background: #dcfce7; }
+        .dash-empty {
+            color: #9ca3af;
+            font-size: 13px;
+            font-style: italic;
+            padding: 20px 0;
+            text-align: center;
+        }
+        .dash-loading {
+            color: #9ca3af;
+            font-size: 13px;
+            padding: 20px 0;
+            text-align: center;
+        }
+
+        @media (max-width: 900px) {
+            .dash-grid { grid-template-columns: repeat(2, 1fr); }
+            .dash-main { grid-template-columns: 1fr; }
+        }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -533,14 +687,65 @@
         <div id="status" class="status"></div>
 
         <div class="tabs">
-            <button class="tab active" onclick="switchTab('client')">Client Summary</button>
+            <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+            <button class="tab" onclick="switchTab('client')">Client Summary</button>
             <button class="tab" onclick="switchTab('domain')">Domain Summary</button>
             <button class="tab" onclick="switchTab('baseDomain')">Base Domain Summary</button>
             <button class="tab" onclick="switchTab('ignored')">Ignored Domains</button>
         </div>
 
+        <!-- Dashboard Panel -->
+        <div id="dashboard-panel" class="panel active">
+            <div class="dash-grid">
+                <div class="dash-card accent-blue">
+                    <div class="kpi-label">Queries Today</div>
+                    <div><span class="kpi-value" id="kpi-queries-value">—</span><span class="kpi-delta" id="kpi-queries-delta"></span></div>
+                    <div class="kpi-sub">vs yesterday</div>
+                    <canvas class="kpi-spark" id="kpi-queries-spark"></canvas>
+                </div>
+                <div class="dash-card accent-red">
+                    <div class="kpi-label">Block Rate Today</div>
+                    <div><span class="kpi-value" id="kpi-blockrate-value">—</span><span class="kpi-delta" id="kpi-blockrate-delta"></span></div>
+                    <div class="kpi-sub" id="kpi-blockrate-sub">&nbsp;</div>
+                    <canvas class="kpi-spark" id="kpi-blockrate-spark"></canvas>
+                </div>
+                <div class="dash-card accent-green">
+                    <div class="kpi-label">Active Clients Today</div>
+                    <div><span class="kpi-value" id="kpi-clients-value">—</span><span class="kpi-delta" id="kpi-clients-delta"></span></div>
+                    <div class="kpi-sub">distinct IPs in the last 24h</div>
+                    <canvas class="kpi-spark" id="kpi-clients-spark"></canvas>
+                </div>
+                <div class="dash-card accent-amber">
+                    <div class="kpi-label">New Domains Today</div>
+                    <div><span class="kpi-value" id="kpi-new-value">—</span></div>
+                    <div class="kpi-sub">first-seen base domains</div>
+                </div>
+            </div>
+
+            <div class="dash-card dash-card-full" style="margin-bottom: 16px;">
+                <div class="dash-card-title">Queries Over Time</div>
+                <div class="dash-card-subtitle">Allowed vs blocked, last 30 days</div>
+                <div class="dash-chart-wrap"><canvas id="chart-queries-over-time"></canvas></div>
+            </div>
+
+            <div class="dash-main">
+                <div class="dash-card">
+                    <div class="dash-card-title">First-Seen Domains Today</div>
+                    <div class="dash-card-subtitle">Base domains observed for the first time today — worth a glance before you trust them</div>
+                    <ul class="dash-list" id="list-first-seen">
+                        <li class="dash-loading">Loading…</li>
+                    </ul>
+                </div>
+                <div class="dash-card">
+                    <div class="dash-card-title">Top Filter Rules (7d)</div>
+                    <div class="dash-card-subtitle">Which blocklist rules are pulling weight</div>
+                    <div class="dash-chart-wrap"><canvas id="chart-top-rules"></canvas></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Client Summary Panel -->
-        <div id="client-panel" class="panel active">
+        <div id="client-panel" class="panel">
             <div class="filters">
                 <div class="filter-group">
                     <label>Date</label>
@@ -932,7 +1137,9 @@
             document.getElementById(`${tabName}-panel`).classList.add('active');
 
             // Load data if empty
-            if (tabName === 'ignored') {
+            if (tabName === 'dashboard') {
+                loadDashboard();
+            } else if (tabName === 'ignored') {
                 loadIgnoredDomains();
             } else if (state[tabName].data.length === 0) {
                 searchData(tabName);
@@ -1603,6 +1810,212 @@
                 }
             });
         });
+
+        // =====================================================
+        // Dashboard
+        // =====================================================
+        const DASH = { sparks: {}, charts: {} };
+
+        async function loadDashboard() {
+            try {
+                const [headline, qot, firstSeen, rules] = await Promise.all([
+                    fetch('/api/dashboard/headline').then(r => r.json()),
+                    fetch('/api/dashboard/queries-over-time?days=30').then(r => r.json()),
+                    fetch('/api/dashboard/first-seen?limit=15').then(r => r.json()),
+                    fetch('/api/dashboard/top-filter-rules?days=7&limit=10').then(r => r.json()),
+                ]);
+                renderHeadline(headline);
+                renderQueriesOverTime(qot);
+                renderFirstSeen(firstSeen);
+                renderTopRules(rules);
+            } catch (e) {
+                console.error('Dashboard load failed:', e);
+            }
+        }
+
+        function dashFmtNum(n) { return new Intl.NumberFormat().format(n); }
+
+        function dashEscape(s) {
+            const div = document.createElement('div');
+            div.textContent = s == null ? '' : String(s);
+            return div.innerHTML;
+        }
+
+        function renderDelta(el, pct) {
+            if (pct === null || pct === undefined || Number.isNaN(pct)) {
+                el.textContent = '';
+                el.className = 'kpi-delta';
+                return;
+            }
+            const cls = pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat';
+            const sign = pct > 0 ? '+' : '';
+            el.textContent = `${sign}${pct.toFixed(1)}%`;
+            el.className = `kpi-delta ${cls}`;
+        }
+
+        function renderHeadline(h) {
+            document.getElementById('kpi-queries-value').textContent = dashFmtNum(h.queries_today.value);
+            renderDelta(document.getElementById('kpi-queries-delta'), h.queries_today.delta_pct);
+
+            document.getElementById('kpi-blockrate-value').textContent = `${h.block_rate.value.toFixed(1)}%`;
+            document.getElementById('kpi-blockrate-sub').textContent =
+                `${dashFmtNum(h.block_rate.blocked)} blocked · ${dashFmtNum(h.block_rate.allowed)} allowed`;
+            renderDelta(document.getElementById('kpi-blockrate-delta'), h.block_rate.delta_pct);
+
+            document.getElementById('kpi-clients-value').textContent = dashFmtNum(h.active_clients_today.value);
+            renderDelta(document.getElementById('kpi-clients-delta'), h.active_clients_today.delta_pct);
+
+            document.getElementById('kpi-new-value').textContent = dashFmtNum(h.new_domains_today.value);
+
+            drawSpark('kpi-queries-spark', h.queries_today.sparkline, '#4a90d9');
+            drawSpark('kpi-blockrate-spark', h.block_rate.sparkline, '#ef4444');
+            drawSpark('kpi-clients-spark', h.active_clients_today.sparkline, '#22c55e');
+        }
+
+        function drawSpark(canvasId, data, color) {
+            const el = document.getElementById(canvasId);
+            if (!el) return;
+            if (DASH.sparks[canvasId]) { DASH.sparks[canvasId].destroy(); }
+            DASH.sparks[canvasId] = new Chart(el, {
+                type: 'line',
+                data: {
+                    labels: data.map((_, i) => i),
+                    datasets: [{
+                        data,
+                        borderColor: color,
+                        backgroundColor: color + '33',
+                        fill: true,
+                        tension: 0.35,
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                    }],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    scales: {
+                        x: { display: false },
+                        y: { display: false, beginAtZero: true },
+                    },
+                    animation: { duration: 250 },
+                },
+            });
+        }
+
+        function renderQueriesOverTime(d) {
+            const el = document.getElementById('chart-queries-over-time');
+            if (DASH.charts.qot) DASH.charts.qot.destroy();
+            DASH.charts.qot = new Chart(el, {
+                type: 'line',
+                data: {
+                    labels: d.dates,
+                    datasets: [
+                        {
+                            label: 'Allowed',
+                            data: d.allowed,
+                            borderColor: '#22c55e',
+                            backgroundColor: 'rgba(34, 197, 94, 0.18)',
+                            fill: true,
+                            tension: 0.3,
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                        },
+                        {
+                            label: 'Blocked',
+                            data: d.blocked,
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.28)',
+                            fill: true,
+                            tension: 0.3,
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                        },
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { position: 'top', align: 'end', labels: { boxWidth: 10, boxHeight: 10, font: { size: 11 } } },
+                        tooltip: { mode: 'index', intersect: false },
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { font: { size: 10 } } },
+                        y: { beginAtZero: true, stacked: true, ticks: { font: { size: 10 } } },
+                    },
+                },
+            });
+        }
+
+        function renderFirstSeen(d) {
+            const ul = document.getElementById('list-first-seen');
+            if (!d.items || d.items.length === 0) {
+                ul.innerHTML = '<li class="dash-empty">No new base domains today.</li>';
+                return;
+            }
+            ul.innerHTML = d.items.map(it => {
+                const badge = it.was_filtered
+                    ? '<span class="dash-badge blocked">blocked</span>'
+                    : '<span class="dash-badge allowed">allowed</span>';
+                const clientLabel = (it.client && it.client !== it.ip)
+                    ? `${it.client} · ${it.ip}`
+                    : it.ip;
+                return `<li>
+                    <div>
+                        <div>${badge}<span class="domain">${dashEscape(it.base_domain)}</span></div>
+                        <div class="client">${dashEscape(clientLabel)}</div>
+                    </div>
+                    <div class="count">${dashFmtNum(it.count)}</div>
+                </li>`;
+            }).join('');
+        }
+
+        function renderTopRules(d) {
+            const el = document.getElementById('chart-top-rules');
+            if (DASH.charts.rules) DASH.charts.rules.destroy();
+            if (!d.items || d.items.length === 0) {
+                el.parentElement.innerHTML = '<div class="dash-empty">No filter hits in the last 7 days.</div>';
+                return;
+            }
+            const labels = d.items.map(i => i.rule.length > 36 ? i.rule.slice(0, 33) + '…' : i.rule);
+            const data = d.items.map(i => i.hits);
+            DASH.charts.rules = new Chart(el, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Hits',
+                        data,
+                        backgroundColor: '#ef4444',
+                        borderRadius: 4,
+                    }],
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { beginAtZero: true, ticks: { font: { size: 10 } } },
+                        y: {
+                            ticks: {
+                                font: { size: 10, family: 'ui-monospace, SFMono-Regular, Menlo, monospace' },
+                                autoSkip: false,
+                            },
+                        },
+                    },
+                },
+            });
+        }
+
+        // Initial dashboard load on first paint
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', loadDashboard);
+        } else {
+            loadDashboard();
+        }
     </script>
 </body>
 </html>
