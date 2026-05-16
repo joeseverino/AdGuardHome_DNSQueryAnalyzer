@@ -1456,11 +1456,12 @@ def dashboard_suspicious_subdomains(limit: int = 15) -> dict:
 
 KNOWN_BENIGN_PARENTS = {
     'amazonaws.com', 'cloudfront.net', 'cloudflare.com', 'akamai.net',
-    'akamaihd.net', 'azureedge.net', 'fastly.net', 'googleusercontent.com',
-    'googleapis.com', 'office.net', 'office.com', 'microsoft.com',
-    'sharepointonline.com', 'live.com', 'msftncsi.com', 'apple.com',
-    'icloud.com', 'edgekey.net', 'edgesuite.net', 'windows.net',
+    'akamaihd.net', 'azureedge.net', 'azure.com', 'fastly.net',
+    'googleusercontent.com', 'googleapis.com', 'office.net', 'office.com',
+    'microsoft.com', 'sharepointonline.com', 'live.com', 'msftncsi.com',
+    'apple.com', 'icloud.com', 'edgekey.net', 'edgesuite.net', 'windows.net',
     'a2z.com', 'amazon.com', 'gvt1.com', 'gvt2.com', '1e100.net',
+    'akadns.net', 'trafficmanager.net',
     'in-addr.arpa', 'ip6.arpa',
 }
 
