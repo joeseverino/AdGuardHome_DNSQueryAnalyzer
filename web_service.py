@@ -26,6 +26,7 @@ from database import (
     dashboard_first_seen, dashboard_top_filter_rules,
     dashboard_top_blocked_clients, dashboard_top_blocked_domains,
     dashboard_query_type_distribution, dashboard_suspicious_subdomains,
+    compute_findings,
 )
 
 # Load .env configuration
@@ -412,6 +413,16 @@ async def api_dashboard_suspicious_subdomains(
 ):
     try:
         return dashboard_suspicious_subdomains(limit=limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Findings (security detections)
+@app.get("/api/findings")
+async def api_findings():
+    """Return ranked, MITRE-tagged detections for today's traffic."""
+    try:
+        return compute_findings()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

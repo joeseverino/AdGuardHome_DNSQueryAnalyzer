@@ -1441,6 +1441,473 @@ def dashboard_suspicious_subdomains(limit: int = 15) -> dict:
         conn.close()
 
 
+# ============================================================================
+# Findings (security detections)
+# ============================================================================
+#
+# Findings transform the raw DNS log into ranked, MITRE-tagged detections.
+# All detectors operate on today's data (or last 2 days for the chatty-client
+# detector) using the same condensed `query_logs` table the dashboard uses.
+#
+# Severity philosophy: HIGH = "investigate this afternoon", MEDIUM = "look
+# this week", LOW/INFO = "FYI". KNOWN_BENIGN_PARENTS keeps Teams routing,
+# CDN edges, and reverse-DNS noise from drowning real signal — those still
+# surface but get demoted to INFO so a HIGH means something.
+
+KNOWN_BENIGN_PARENTS = {
+    'amazonaws.com', 'cloudfront.net', 'cloudflare.com', 'akamai.net',
+    'akamaihd.net', 'azureedge.net', 'fastly.net', 'googleusercontent.com',
+    'googleapis.com', 'office.net', 'office.com', 'microsoft.com',
+    'sharepointonline.com', 'live.com', 'msftncsi.com', 'apple.com',
+    'icloud.com', 'edgekey.net', 'edgesuite.net', 'windows.net',
+    'a2z.com', 'amazon.com', 'gvt1.com', 'gvt2.com', '1e100.net',
+    'in-addr.arpa', 'ip6.arpa',
+}
+
+
+def _shannon_entropy(s: str) -> float:
+    if not s:
+        return 0.0
+    from collections import Counter
+    from math import log2
+    counts = Counter(s.lower())
+    total = len(s)
+    return -sum((c / total) * log2(c / total) for c in counts.values())
+
+
+def _detect_tunneling(conn) -> list[dict]:
+    rows = conn.execute(f"""
+        WITH today_long AS (
+            SELECT
+                domain,
+                {_BASE_DOMAIN_SQL} AS base_domain,
+                ip,
+                COALESCE(NULLIF(client, ''), ip) AS client_name,
+                count,
+                is_filtered
+            FROM query_logs
+            WHERE date = CURRENT_DATE
+              AND domain LIKE '%.%'
+              AND LENGTH(domain) > 50
+              AND domain NOT IN (SELECT domain FROM ignored_domains)
+        )
+        SELECT
+            base_domain,
+            client_name,
+            ip,
+            COUNT(DISTINCT domain) AS unique_subdomains,
+            AVG(LENGTH(domain)) AS avg_length,
+            MAX(LENGTH(domain) - LENGTH(REPLACE(domain, '.', ''))) AS max_dots,
+            SUM(count) AS total_hits,
+            BOOL_OR(is_filtered) AS any_filtered
+        FROM today_long
+        GROUP BY base_domain, client_name, ip
+        HAVING COUNT(DISTINCT domain) >= 3
+           AND AVG(LENGTH(domain)) > 55
+           AND MAX(LENGTH(domain) - LENGTH(REPLACE(domain, '.', ''))) >= 5
+           AND base_domain != ''
+        ORDER BY total_hits DESC
+        LIMIT 15
+    """).fetchall()
+
+    findings = []
+    for i, r in enumerate(rows):
+        parent, client_name, ip = r[0], r[1], r[2]
+        unique_sub, avg_len, max_dots = int(r[3]), float(r[4]), int(r[5])
+        hits, any_filtered = int(r[6]), bool(r[7])
+
+        samples = [s[0] for s in conn.execute(f"""
+            SELECT domain
+            FROM query_logs
+            WHERE date = CURRENT_DATE
+              AND ip = ?
+              AND {_BASE_DOMAIN_SQL} = ?
+              AND LENGTH(domain) > 50
+            GROUP BY domain
+            ORDER BY LENGTH(domain) DESC
+            LIMIT 3
+        """, [ip, parent]).fetchall()]
+
+        if parent in KNOWN_BENIGN_PARENTS:
+            sev = "info"
+        elif not any_filtered and hits > 100:
+            sev = "high"
+        else:
+            sev = "medium"
+
+        if sev == "high":
+            action = ("Unknown parent + sustained long-subdomain volume + not "
+                      "filtered — pivot on this client and treat the parent as a "
+                      "candidate covert channel until proven otherwise.")
+        elif sev == "info":
+            action = ("Structure matches tunneling but parent is known SaaS infra "
+                      "(e.g., Teams routing, CDN). Sanity-check once, then ignore.")
+        else:
+            action = ("Plausible but partially filtered or low-volume. Open the "
+                      "client's full log and watch trend across days.")
+
+        findings.append({
+            "id": f"tunnel-{i}",
+            "title": f"DNS tunneling pattern: {parent}",
+            "severity": sev,
+            "mitre": {"id": "T1071.004", "name": "Application Layer Protocol: DNS"},
+            "summary": (
+                f"{client_name} made {hits:,} queries to {unique_sub} long "
+                f"subdomains under {parent} today (avg {avg_len:.0f} chars, "
+                f"up to {max_dots} dots deep)."
+            ),
+            "evidence": [
+                {"label": "Client", "value": client_name},
+                {"label": "Parent domain", "value": parent, "mono": True},
+                {"label": "Sample subdomains", "value": "\n".join(samples),
+                 "mono": True, "block": True},
+            ],
+            "metrics": {
+                "Queries": hits,
+                "Unique subdomains": unique_sub,
+                "Avg length": int(avg_len),
+                "Max depth (dots)": max_dots,
+                "Filtered": "yes" if any_filtered else "no",
+            },
+            "action": action,
+            "drill": {"type": "client_summary",
+                      "params": {"ip": ip, "qh": parent, "date": "CURRENT_DATE"}},
+        })
+    return findings
+
+
+def _detect_dga(conn) -> list[dict]:
+    rows = conn.execute(f"""
+        SELECT
+            {_BASE_DOMAIN_SQL} AS base_domain,
+            domain,
+            SUM(count) AS hits,
+            BOOL_OR(is_filtered) AS any_filtered,
+            ANY_VALUE(ip) AS sample_ip,
+            COALESCE(ANY_VALUE(NULLIF(client, '')), ANY_VALUE(ip)) AS sample_client
+        FROM query_logs
+        WHERE date = CURRENT_DATE
+          AND domain LIKE '%.%'
+          AND domain NOT IN (SELECT domain FROM ignored_domains)
+        GROUP BY base_domain, domain
+    """).fetchall()
+
+    from collections import defaultdict
+    groups = defaultdict(lambda: {"labels": [], "domains": [], "hits": 0,
+                                  "filtered": False, "client": "", "ip": ""})
+    for parent, domain, hits, any_filtered, ip, client in rows:
+        if not parent or parent == domain or not domain.endswith(parent):
+            continue
+        prefix = domain[:-(len(parent) + 1)]
+        leftmost = prefix.split('.')[0] if prefix else ''
+        if len(leftmost) < 6:
+            continue
+        g = groups[parent]
+        g["labels"].append(leftmost)
+        g["domains"].append(domain)
+        g["hits"] += int(hits)
+        g["filtered"] = g["filtered"] or bool(any_filtered)
+        if not g["client"]:
+            g["client"] = client
+            g["ip"] = ip
+
+    findings = []
+    idx = 0
+    for parent, g in sorted(groups.items(), key=lambda kv: -kv[1]["hits"]):
+        labels = g["labels"]
+        if len(labels) < 5:
+            continue
+        avg_entropy = sum(_shannon_entropy(l) for l in labels) / len(labels)
+        avg_label_len = sum(len(l) for l in labels) / len(labels)
+        if avg_entropy < 3.5 or avg_label_len < 10:
+            continue
+
+        if parent in KNOWN_BENIGN_PARENTS:
+            sev = "info"
+        elif avg_entropy > 4.0 and not g["filtered"]:
+            sev = "high"
+        else:
+            sev = "medium"
+
+        samples = sorted(set(g["domains"]), key=len, reverse=True)[:3]
+
+        if sev == "high":
+            action = ("High character randomness on a non-CDN parent is the DGA "
+                      "signature. Pivot on the client and sandbox the parent.")
+        elif sev == "info":
+            action = ("Random-looking labels are normal for CDNs and cache busters. "
+                      "Confirm vendor and ignore.")
+        else:
+            action = ("Random but modest volume or partially blocked. Re-check "
+                      "tomorrow — DGAs typically cycle.")
+
+        findings.append({
+            "id": f"dga-{idx}",
+            "title": f"DGA-like subdomains under {parent}",
+            "severity": sev,
+            "mitre": {"id": "T1568.002", "name": "Dynamic Resolution: DGA"},
+            "summary": (
+                f"{len(labels)} unique high-entropy subdomain labels under "
+                f"{parent} today (avg entropy {avg_entropy:.2f} bits, avg "
+                f"label length {avg_label_len:.0f})."
+            ),
+            "evidence": [
+                {"label": "Client (sample)", "value": g["client"]},
+                {"label": "Parent domain", "value": parent, "mono": True},
+                {"label": "Sample subdomains", "value": "\n".join(samples),
+                 "mono": True, "block": True},
+            ],
+            "metrics": {
+                "Unique labels": len(labels),
+                "Avg entropy": round(avg_entropy, 2),
+                "Avg label length": int(avg_label_len),
+                "Total hits": g["hits"],
+                "Filtered": "yes" if g["filtered"] else "no",
+            },
+            "action": action,
+            "drill": {"type": "client_summary",
+                      "params": {"ip": g["ip"], "qh": parent, "date": "CURRENT_DATE"}},
+        })
+        idx += 1
+        if idx >= 10:
+            break
+    return findings
+
+
+def _detect_new_high_traffic(conn) -> list[dict]:
+    rows = conn.execute(f"""
+        WITH base AS (
+            SELECT
+                {_BASE_DOMAIN_SQL} AS base_domain,
+                MIN(date) AS first_seen,
+                SUM(CASE WHEN date = CURRENT_DATE THEN count ELSE 0 END) AS today_hits,
+                BOOL_OR(date = CURRENT_DATE AND is_filtered) AS today_filtered
+            FROM query_logs
+            WHERE domain LIKE '%.%'
+              AND domain NOT IN (SELECT domain FROM ignored_domains)
+            GROUP BY 1
+        )
+        SELECT base_domain, first_seen, today_hits, today_filtered
+        FROM base
+        WHERE first_seen = CURRENT_DATE
+          AND base_domain != ''
+          AND today_hits >= 50
+        ORDER BY today_hits DESC
+        LIMIT 10
+    """).fetchall()
+
+    findings = []
+    for i, (parent, first_seen, hits, filtered) in enumerate(rows):
+        hits = int(hits)
+        top = conn.execute(f"""
+            SELECT
+                COALESCE(NULLIF(client, ''), ip) AS name,
+                ip,
+                SUM(count) AS c
+            FROM query_logs
+            WHERE date = CURRENT_DATE
+              AND {_BASE_DOMAIN_SQL} = ?
+            GROUP BY name, ip
+            ORDER BY c DESC
+            LIMIT 1
+        """, [parent]).fetchone()
+        client_name = top[0] if top else "?"
+        client_ip = top[1] if top else ""
+
+        if parent in KNOWN_BENIGN_PARENTS:
+            sev = "info"
+        elif hits >= 500 and not filtered:
+            sev = "medium"
+        else:
+            sev = "low"
+
+        action = ("Unknown parent with day-one traction warrants a WHOIS + "
+                  "reputation check before trusting it." if sev != "info"
+                  else "Known infra spinning up a new edge node — usually benign.")
+
+        findings.append({
+            "id": f"new-{i}",
+            "title": f"New domain with traffic today: {parent}",
+            "severity": sev,
+            "mitre": {"id": "T1583.001", "name": "Acquire Infrastructure: Domains"},
+            "summary": (
+                f"{parent} was first observed today and already saw "
+                f"{hits:,} queries (top driver {client_name})."
+            ),
+            "evidence": [
+                {"label": "Base domain", "value": parent, "mono": True},
+                {"label": "First seen", "value": str(first_seen)},
+                {"label": "Top client", "value": client_name},
+                {"label": "Blocked today", "value": "yes" if filtered else "no"},
+            ],
+            "metrics": {"Queries today": hits},
+            "action": action,
+            "drill": {"type": "client_summary",
+                      "params": {"ip": client_ip, "qh": parent, "date": "CURRENT_DATE"}},
+        })
+    return findings
+
+
+def _detect_chatty_blocked_clients(conn) -> list[dict]:
+    rows = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(client, ''), ip) AS name,
+            ip,
+            SUM(count) AS total,
+            SUM(CASE WHEN is_filtered THEN count ELSE 0 END) AS blocks,
+            COUNT(DISTINCT CASE WHEN is_filtered THEN domain END) AS unique_blocked
+        FROM query_logs
+        WHERE date >= CURRENT_DATE - 1
+        GROUP BY name, ip
+        HAVING SUM(count) >= 500
+           AND SUM(CASE WHEN is_filtered THEN count ELSE 0 END) * 1.0 / SUM(count) >= 0.5
+        ORDER BY blocks DESC
+        LIMIT 5
+    """).fetchall()
+
+    findings = []
+    for i, (name, ip, total, blocks, uniq) in enumerate(rows):
+        total, blocks, uniq = int(total), int(blocks), int(uniq)
+        pct = blocks / total * 100.0
+
+        top_blocked = conn.execute("""
+            SELECT domain, SUM(count) AS c
+            FROM query_logs
+            WHERE date >= CURRENT_DATE - 1
+              AND is_filtered = TRUE
+              AND ip = ?
+            GROUP BY domain
+            ORDER BY c DESC
+            LIMIT 3
+        """, [ip]).fetchall()
+        sample_blocked = "\n".join(f"{d}  ({int(c):,})" for d, c in top_blocked)
+
+        sev = "medium" if pct >= 65 else "low"
+
+        findings.append({
+            "id": f"chatty-{i}",
+            "title": f"High block-rate client: {name}",
+            "severity": sev,
+            "mitre": None,
+            "summary": (
+                f"{name} ran {total:,} queries in the last 2 days and "
+                f"{pct:.0f}% were blocked ({blocks:,} blocks across {uniq} "
+                f"unique domains)."
+            ),
+            "evidence": [
+                {"label": "Client", "value": name},
+                {"label": "IP", "value": ip, "mono": True},
+                {"label": "Top blocked destinations", "value": sample_blocked,
+                 "mono": True, "block": True},
+            ],
+            "metrics": {
+                "Total queries": total,
+                "Blocked": blocks,
+                "Block rate": f"{pct:.1f}%",
+                "Unique blocked domains": uniq,
+            },
+            "action": ("Either a chatty ad-tech device (typical for smart TVs / "
+                       "IoT) or a compromised host. Cross-check the top destinations "
+                       "against known adware/telemetry lists; if those look clean, "
+                       "look closer."),
+            "drill": {"type": "client_summary",
+                      "params": {"ip": ip, "is_filtered": True}},
+        })
+    return findings
+
+
+def _detect_rare_query_types(conn) -> list[dict]:
+    rows = conn.execute("""
+        SELECT
+            COALESCE(NULLIF(query_type, ''), '?') AS qt,
+            SUM(count) AS hits,
+            COUNT(DISTINCT domain) AS unique_domains,
+            COUNT(DISTINCT ip) AS unique_clients
+        FROM query_logs
+        WHERE date = CURRENT_DATE
+          AND query_type IN ('TXT', 'NULL', 'ANY', 'AXFR')
+        GROUP BY qt
+        HAVING SUM(count) >= 30
+        ORDER BY hits DESC
+    """).fetchall()
+
+    findings = []
+    for i, (qt, hits, ud, uc) in enumerate(rows):
+        hits, ud, uc = int(hits), int(ud), int(uc)
+        if qt == "TXT" and hits >= 500:
+            sev = "medium"
+        elif qt in ("NULL", "ANY", "AXFR") and hits >= 100:
+            sev = "medium"
+        else:
+            sev = "low"
+
+        findings.append({
+            "id": f"qtype-{i}",
+            "title": f"Elevated {qt} record queries today",
+            "severity": sev,
+            "mitre": {"id": "T1071.004", "name": "Application Layer Protocol: DNS"},
+            "summary": (
+                f"{hits:,} {qt} queries across {ud} domains and {uc} clients. "
+                f"TXT / NULL spikes are a classic DNS-tunneling indicator."
+            ),
+            "evidence": [
+                {"label": "Record type", "value": qt},
+                {"label": "Unique domains", "value": str(ud)},
+                {"label": "Unique clients", "value": str(uc)},
+            ],
+            "metrics": {"Queries": hits},
+            "action": ("Modern apps use TXT for SPF/DKIM and ACME — modest volume "
+                       "is fine. Drill in if a single client/domain dominates the mix."),
+            "drill": {"type": "client_summary",
+                      "params": {"qt": qt, "date": "CURRENT_DATE"}},
+        })
+    return findings
+
+
+_SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
+
+
+def _finding_sort_key(f: dict):
+    sev = _SEVERITY_ORDER.get(f.get("severity"), 9)
+    metrics = f.get("metrics", {}) or {}
+    volume = 0
+    for k in ("Queries", "Queries today", "Total queries", "Total hits", "Blocked"):
+        v = metrics.get(k)
+        if isinstance(v, int):
+            volume = max(volume, v)
+    return (sev, -volume)
+
+
+def compute_findings() -> dict:
+    """Run all detectors and return severity-sorted findings + summary counts."""
+    conn = get_connection()
+    try:
+        all_findings = []
+        for detector in (_detect_tunneling, _detect_dga,
+                         _detect_new_high_traffic,
+                         _detect_chatty_blocked_clients,
+                         _detect_rare_query_types):
+            try:
+                all_findings.extend(detector(conn))
+            except Exception as e:
+                # One detector failure shouldn't kill the whole tab
+                print(f"[findings] {detector.__name__} failed: {e}")
+
+        all_findings.sort(key=_finding_sort_key)
+
+        counts = {"high": 0, "medium": 0, "low": 0, "info": 0}
+        for f in all_findings:
+            counts[f.get("severity", "info")] = counts.get(f.get("severity", "info"), 0) + 1
+
+        return {
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "counts": counts,
+            "findings": all_findings,
+        }
+    finally:
+        conn.close()
+
+
 if __name__ == "__main__":
     # Initialize database when run directly
     init_database()

@@ -714,6 +714,202 @@
             .dash-grid { grid-template-columns: repeat(2, 1fr); }
             .dash-main, .dash-row-2, .dash-row-3 { grid-template-columns: 1fr; }
         }
+
+        /* ============================================ */
+        /* Findings                                     */
+        /* ============================================ */
+        #findings-panel { padding: 0; }
+
+        .find-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .find-summary {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            font-size: 13px;
+            color: #6b7280;
+            font-variant-numeric: tabular-nums;
+            flex-wrap: wrap;
+        }
+        .find-summary strong { color: #111827; font-weight: 600; }
+        .find-summary .sep { color: #d1d5db; }
+        .find-filters { display: flex; gap: 6px; flex-wrap: wrap; }
+        .find-chip {
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            color: #374151;
+            border-radius: 999px;
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            line-height: 1.4;
+        }
+        .find-chip:hover { background: #f9fafb; }
+        .find-chip.active { background: #111827; color: #fff; border-color: #111827; }
+
+        .find-list {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 12px;
+        }
+        .find-card {
+            background: #fff;
+            border-radius: 10px;
+            padding: 16px 18px;
+            border: 1px solid #e5e7eb;
+            border-left-width: 4px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        }
+        .find-card.sev-high   { border-left-color: #ef4444; }
+        .find-card.sev-medium { border-left-color: #f59e0b; }
+        .find-card.sev-low    { border-left-color: #4a90d9; }
+        .find-card.sev-info   { border-left-color: #9ca3af; }
+
+        .find-card-head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 4px;
+        }
+        .find-sev-pill {
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            padding: 3px 8px;
+            border-radius: 3px;
+            color: #fff;
+        }
+        .find-sev-pill.sev-high   { background: #ef4444; }
+        .find-sev-pill.sev-medium { background: #f59e0b; }
+        .find-sev-pill.sev-low    { background: #4a90d9; }
+        .find-sev-pill.sev-info   { background: #9ca3af; }
+
+        .find-mitre-chip {
+            font-size: 11px;
+            font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+            color: #4338ca;
+            background: #eef2ff;
+            border: 1px solid #c7d2fe;
+            border-radius: 3px;
+            padding: 2px 6px;
+        }
+        .find-mitre-chip .name {
+            color: #6b7280;
+            margin-left: 6px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        .find-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #111827;
+            margin: 4px 0 4px 0;
+        }
+        .find-summary-line {
+            font-size: 13px;
+            color: #374151;
+            line-height: 1.5;
+            margin-bottom: 12px;
+        }
+        .find-evidence {
+            background: #f9fafb;
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 10px;
+            font-size: 12px;
+        }
+        .find-evidence-row {
+            display: grid;
+            grid-template-columns: 150px 1fr;
+            gap: 12px;
+            padding: 3px 0;
+        }
+        .find-evidence-row .label {
+            color: #6b7280;
+            font-weight: 500;
+        }
+        .find-evidence-row .value {
+            color: #111827;
+            word-break: break-all;
+        }
+        .find-evidence-row .value.mono {
+            font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+        }
+        .find-evidence-row .value.block {
+            white-space: pre-line;
+            background: #fff;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            padding: 6px 8px;
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .find-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 18px;
+            padding: 8px 0 10px 0;
+            border-top: 1px dashed #e5e7eb;
+            margin-bottom: 6px;
+        }
+        .find-metric {
+            font-size: 12px;
+            color: #6b7280;
+        }
+        .find-metric .v {
+            color: #111827;
+            font-weight: 600;
+            font-variant-numeric: tabular-nums;
+            margin-left: 4px;
+        }
+        .find-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .find-action {
+            font-size: 12px;
+            color: #6b7280;
+            font-style: italic;
+            flex: 1;
+        }
+        .find-drill-btn {
+            background: #fff;
+            border: 1px solid #d1d5db;
+            color: #111827;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .find-drill-btn:hover { background: #f3f4f6; }
+
+        .find-empty {
+            text-align: center;
+            color: #9ca3af;
+            font-size: 13px;
+            font-style: italic;
+            padding: 40px 20px;
+            background: #f9fafb;
+            border-radius: 8px;
+            border: 1px dashed #e5e7eb;
+        }
+
+        @media (min-width: 1200px) {
+            .find-list { grid-template-columns: repeat(2, 1fr); }
+        }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
@@ -729,6 +925,7 @@
 
         <div class="tabs">
             <button class="tab active" onclick="switchTab('dashboard')">Dashboard</button>
+            <button class="tab" onclick="switchTab('findings')">Findings</button>
             <button class="tab" onclick="switchTab('client')">Client Summary</button>
             <button class="tab" onclick="switchTab('domain')">Domain Summary</button>
             <button class="tab" onclick="switchTab('baseDomain')">Base Domain Summary</button>
@@ -812,6 +1009,25 @@
                         <li class="dash-loading">Loading…</li>
                     </ul>
                 </div>
+            </div>
+        </div>
+
+        <!-- Findings Panel -->
+        <div id="findings-panel" class="panel">
+            <div class="find-header">
+                <div class="find-summary" id="findings-summary">
+                    <span class="dash-loading">Loading findings…</span>
+                </div>
+                <div class="find-filters" id="findings-filters">
+                    <button class="find-chip active" data-sev="all" onclick="filterFindings('all')">All</button>
+                    <button class="find-chip" data-sev="high" onclick="filterFindings('high')">High</button>
+                    <button class="find-chip" data-sev="medium" onclick="filterFindings('medium')">Medium</button>
+                    <button class="find-chip" data-sev="low" onclick="filterFindings('low')">Low</button>
+                    <button class="find-chip" data-sev="info" onclick="filterFindings('info')">Info</button>
+                </div>
+            </div>
+            <div class="find-list" id="findings-list">
+                <div class="find-empty">Loading…</div>
             </div>
         </div>
 
@@ -1210,6 +1426,8 @@
             // Load data if empty
             if (tabName === 'dashboard') {
                 loadDashboard();
+            } else if (tabName === 'findings') {
+                loadFindings();
             } else if (tabName === 'ignored') {
                 loadIgnoredDomains();
             } else if (state[tabName].data.length === 0) {
@@ -2225,6 +2443,151 @@
             document.addEventListener('DOMContentLoaded', loadDashboard);
         } else {
             loadDashboard();
+        }
+
+        // ============================================================
+        // Findings tab
+        // ============================================================
+        const findingsState = { all: [], filter: 'all' };
+
+        async function loadFindings() {
+            const list = document.getElementById('findings-list');
+            list.innerHTML = '<div class="find-empty">Loading…</div>';
+            try {
+                const data = await fetch('/api/findings').then(r => r.json());
+                findingsState.all = Array.isArray(data.findings) ? data.findings : [];
+                renderFindingsSummary(data);
+                renderFindingsList();
+            } catch (e) {
+                list.innerHTML = '<div class="find-empty">Failed to load findings: '
+                    + escapeHtml(String(e)) + '</div>';
+            }
+        }
+
+        function renderFindingsSummary(data) {
+            const c = data.counts || { high: 0, medium: 0, low: 0, info: 0 };
+            const total = (c.high || 0) + (c.medium || 0) + (c.low || 0) + (c.info || 0);
+            const ts = data.generated_at
+                ? new Date(data.generated_at).toLocaleString()
+                : '';
+            const part = (n, color, label) =>
+                `<strong style="color:${color}">${n || 0}</strong> ${label}`;
+            const pieces = [
+                `<strong>${total}</strong> findings`,
+                part(c.high,   '#ef4444', 'high'),
+                part(c.medium, '#f59e0b', 'medium'),
+                part(c.low,    '#4a90d9', 'low'),
+                part(c.info,   '#9ca3af', 'info'),
+            ];
+            if (ts) pieces.push(`generated ${escapeHtml(ts)}`);
+            document.getElementById('findings-summary').innerHTML =
+                pieces.join('<span class="sep">·</span>');
+        }
+
+        function filterFindings(sev) {
+            findingsState.filter = sev;
+            document.querySelectorAll('#findings-filters .find-chip').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.sev === sev);
+            });
+            renderFindingsList();
+        }
+
+        function renderFindingsList() {
+            const list = document.getElementById('findings-list');
+            const f = findingsState.filter;
+            const items = findingsState.all.filter(x => f === 'all' || x.severity === f);
+            if (items.length === 0) {
+                const msg = f === 'all'
+                    ? "Quiet day — no detections fired. Either your blocklists are doing their job, or there isn't enough data ingested yet."
+                    : `No findings at severity '${f}'.`;
+                list.innerHTML = `<div class="find-empty">${escapeHtml(msg)}</div>`;
+                return;
+            }
+            list.innerHTML = items.map(renderFindingCard).join('');
+            // Bind drill buttons by ID lookup (safer than embedding JSON in inline onclick)
+            list.querySelectorAll('.find-drill-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const f = findingsState.all.find(x => x.id === btn.dataset.findId);
+                    if (f && f.drill) openFromFinding(f.drill);
+                });
+            });
+        }
+
+        function renderFindingCard(f) {
+            const sev = f.severity || 'info';
+            const mitre = f.mitre
+                ? `<span class="find-mitre-chip">${escapeHtml(f.mitre.id)}<span class="name">${escapeHtml(f.mitre.name)}</span></span>`
+                : '';
+            const evidence = (f.evidence || []).map(e => {
+                const cls = (e.mono ? ' mono' : '') + (e.block ? ' block' : '');
+                return `<div class="find-evidence-row">`
+                    + `<div class="label">${escapeHtml(e.label || '')}</div>`
+                    + `<div class="value${cls}">${escapeHtml(e.value || '')}</div>`
+                    + `</div>`;
+            }).join('');
+            const metrics = Object.entries(f.metrics || {}).map(([k, v]) => {
+                const val = typeof v === 'number' ? v.toLocaleString() : String(v);
+                return `<div class="find-metric">${escapeHtml(k)}<span class="v">${escapeHtml(val)}</span></div>`;
+            }).join('');
+            const drillBtn = f.drill
+                ? `<button class="find-drill-btn" data-find-id="${escapeHtml(f.id || '')}">Open in Client Summary →</button>`
+                : '';
+            return `
+                <div class="find-card sev-${sev}">
+                    <div class="find-card-head">
+                        <span class="find-sev-pill sev-${sev}">${escapeHtml(sev)}</span>
+                        ${mitre}
+                    </div>
+                    <div class="find-title">${escapeHtml(f.title || '')}</div>
+                    <div class="find-summary-line">${escapeHtml(f.summary || '')}</div>
+                    ${evidence ? `<div class="find-evidence">${evidence}</div>` : ''}
+                    ${metrics ? `<div class="find-metrics">${metrics}</div>` : ''}
+                    <div class="find-footer">
+                        <div class="find-action">${escapeHtml(f.action || '')}</div>
+                        ${drillBtn}
+                    </div>
+                </div>
+            `;
+        }
+
+        function openFromFinding(drill) {
+            if (!drill || drill.type !== 'client_summary') return;
+            const p = drill.params || {};
+
+            const setVal = (id, val) => {
+                const el = document.getElementById(id);
+                if (el && val !== undefined && val !== null && val !== '') el.value = val;
+            };
+
+            // Clear stale filters first so the drill is the only context
+            ['client-date', 'client-qh', 'client-ip', 'client-qt', 'client-cp',
+             'client-filterRule', 'client-countGte', 'client-countLte'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+            const fSel = document.getElementById('client-isFiltered');
+            if (fSel) fSel.value = '';
+
+            setVal('client-ip', p.ip);
+            setVal('client-qh', p.qh);
+            setVal('client-qt', p.qt);
+            if (p.is_filtered !== undefined) {
+                if (fSel) fSel.value = (p.is_filtered === true || p.is_filtered === 'true') ? 'true' : 'false';
+            }
+            if (p.date === 'CURRENT_DATE') {
+                setVal('client-date', new Date().toISOString().slice(0, 10));
+            } else if (p.date) {
+                setVal('client-date', p.date);
+            }
+
+            // Switch tab manually (event.target trick in switchTab assumes a .tab click)
+            document.querySelectorAll('.tab').forEach(t => {
+                t.classList.toggle('active', t.textContent.trim() === 'Client Summary');
+            });
+            document.querySelectorAll('.panel').forEach(panel => panel.classList.remove('active'));
+            document.getElementById('client-panel').classList.add('active');
+
+            if (typeof searchData === 'function') searchData('client');
         }
     </script>
 </body>
