@@ -63,6 +63,26 @@ def init_database():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_is_filtered ON query_logs(is_filtered)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_query_type ON query_logs(query_type)")
 
+    # Hot table for timing-sensitive analysis (beaconing, interval patterns).
+    # Kept separate from the condensed `query_logs` because the value here is
+    # the per-event timestamp, which condensing destroys. Retention is short
+    # (RAW_RETENTION_DAYS) — long enough to spot a recurring beacon, short
+    # enough that storage stays bounded.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS raw_queries (
+            timestamp TIMESTAMPTZ NOT NULL,
+            ip VARCHAR NOT NULL,
+            client VARCHAR DEFAULT '',
+            domain VARCHAR NOT NULL,
+            query_type VARCHAR,
+            is_filtered BOOLEAN DEFAULT FALSE,
+            filter_rule TEXT
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_ip_ts ON raw_queries(ip, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_domain_ts ON raw_queries(domain, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_ts ON raw_queries(timestamp)")
+
     # Create a table to track last fetch timestamp
     conn.execute("""
         CREATE TABLE IF NOT EXISTS fetch_metadata (
@@ -183,10 +203,11 @@ def insert_log_entries(entries: list[dict], conn: Optional[duckdb.DuckDBPyConnec
     # Get client name mapping
     client_map = get_client_names_map(conn)
 
-    rows = []
+    condensed_rows = []
+    raw_rows = []
     for entry in entries:
         ts_str = entry.get('T', '')
-        _, date_str = parse_timestamp(ts_str)
+        dt, date_str = parse_timestamp(ts_str)
 
         result = entry.get('Result', {})
         rules = result.get('Rules', [])
@@ -194,32 +215,61 @@ def insert_log_entries(entries: list[dict], conn: Optional[duckdb.DuckDBPyConnec
 
         ip = entry.get('IP', '')
         client = client_map.get(ip, '')
+        domain = entry.get('QH', '')
+        query_type = entry.get('QT', '')
+        is_filtered = result.get('IsFiltered', False)
 
-        rows.append((
-            date_str,                              # date
-            ip,                                    # ip
-            client,                                # client
-            entry.get('QH', ''),                   # domain
-            entry.get('QT', ''),                   # query_type
-            entry.get('CP', ''),                   # client_protocol
-            entry.get('Upstream', ''),             # upstream
-            result.get('IsFiltered', False),       # is_filtered
-            filter_rule,                           # filter_rule
-            1,                                     # count
+        condensed_rows.append((
+            date_str, ip, client, domain, query_type,
+            entry.get('CP', ''), entry.get('Upstream', ''),
+            is_filtered, filter_rule, 1,
+        ))
+        # raw_queries: keep per-event timestamp for beaconing detection.
+        raw_rows.append((
+            dt, ip, client, domain, query_type, is_filtered, filter_rule,
         ))
 
-    if rows:
+    if condensed_rows:
         conn.executemany("""
             INSERT INTO query_logs
             (date, ip, client, domain, query_type, client_protocol,
              upstream, is_filtered, filter_rule, count)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
+        """, condensed_rows)
+
+    if raw_rows:
+        conn.executemany("""
+            INSERT INTO raw_queries
+            (timestamp, ip, client, domain, query_type, is_filtered, filter_rule)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, raw_rows)
 
     if should_close:
         conn.close()
 
-    return len(rows)
+    return len(condensed_rows)
+
+
+# Retention window for the hot raw_queries table. Pruned on every fetch.
+RAW_RETENTION_DAYS = 7
+
+
+def prune_raw_queries(days_to_keep: int = RAW_RETENTION_DAYS) -> int:
+    """Drop rows older than `days_to_keep` from raw_queries. Returns count deleted."""
+    days = max(1, int(days_to_keep))
+    conn = get_connection()
+    try:
+        count_row = conn.execute(
+            f"SELECT COUNT(*) FROM raw_queries WHERE timestamp < NOW() - INTERVAL '{days}' DAY"
+        ).fetchone()
+        to_delete = int(count_row[0]) if count_row and count_row[0] else 0
+        if to_delete > 0:
+            conn.execute(
+                f"DELETE FROM raw_queries WHERE timestamp < NOW() - INTERVAL '{days}' DAY"
+            )
+        return to_delete
+    finally:
+        conn.close()
 
 
 def condense_logs(conn: Optional[duckdb.DuckDBPyConnection] = None) -> dict:
@@ -1865,6 +1915,141 @@ def _detect_rare_query_types(conn) -> list[dict]:
     return findings
 
 
+def _detect_beaconing(conn, days: int = 2) -> list[dict]:
+    """
+    Detect periodic per-(client, base_domain) DNS patterns from raw_queries.
+
+    Beaconing = roughly periodic queries to the same destination, the
+    classic C2 callback shape. Implementation: pull events per pair from
+    the lookback window, compute mean inter-arrival interval and the
+    coefficient of variation (CV = stddev / mean). Low CV on a high-volume
+    series is the signature.
+
+    Requires the raw_queries table to have data; returns [] silently if it
+    doesn't (e.g. brand-new install before the first fetch since the schema
+    landed).
+    """
+    has_data = conn.execute(
+        f"SELECT COUNT(*) FROM raw_queries WHERE timestamp >= NOW() - INTERVAL '{int(days)}' DAY"
+    ).fetchone()
+    if not has_data or has_data[0] == 0:
+        return []
+
+    pairs = conn.execute(f"""
+        SELECT
+            ip,
+            COALESCE(NULLIF(client, ''), ip) AS client_name,
+            {_BASE_DOMAIN_SQL} AS base_domain,
+            COUNT(*) AS event_count,
+            BOOL_OR(is_filtered) AS any_filtered
+        FROM raw_queries
+        WHERE timestamp >= NOW() - INTERVAL '{int(days)}' DAY
+          AND domain LIKE '%.%'
+          AND domain NOT IN (SELECT domain FROM ignored_domains)
+        GROUP BY ip, client_name, base_domain
+        HAVING COUNT(*) >= 20 AND base_domain != ''
+        ORDER BY event_count DESC
+        LIMIT 50
+    """).fetchall()
+
+    findings = []
+    idx = 0
+    for ip, client_name, base_domain, event_count, any_filtered in pairs:
+        ts_rows = conn.execute(f"""
+            SELECT timestamp
+            FROM raw_queries
+            WHERE timestamp >= NOW() - INTERVAL '{int(days)}' DAY
+              AND ip = ?
+              AND {_BASE_DOMAIN_SQL} = ?
+            ORDER BY timestamp
+        """, [ip, base_domain]).fetchall()
+        timestamps = [r[0] for r in ts_rows]
+        if len(timestamps) < 20:
+            continue
+
+        # Inter-arrival deltas in seconds. Drop sub-second gaps — those are
+        # multi-record lookups (A + AAAA + HTTPS firing together), not beacons.
+        intervals = []
+        for i in range(1, len(timestamps)):
+            dt_diff = (timestamps[i] - timestamps[i - 1]).total_seconds()
+            if dt_diff >= 1.0:
+                intervals.append(dt_diff)
+        if len(intervals) < 15:
+            continue
+
+        mean = sum(intervals) / len(intervals)
+        if mean < 5 or mean > 7200:
+            continue  # too tight or too loose to be interesting
+
+        variance = sum((x - mean) ** 2 for x in intervals) / len(intervals)
+        stddev = variance ** 0.5
+        cv = stddev / mean if mean else 999.0
+
+        if cv > 0.4:
+            continue  # not regular enough
+
+        if mean < 90:
+            interval_str = f"~{mean:.0f}s"
+        elif mean < 3600:
+            interval_str = f"~{mean / 60:.1f} min"
+        else:
+            interval_str = f"~{mean / 3600:.1f} hr"
+
+        if base_domain in KNOWN_BENIGN_PARENTS:
+            sev = "info"
+        elif cv < 0.15 and not any_filtered and mean < 1800:
+            sev = "high"
+        elif cv < 0.25:
+            sev = "medium"
+        else:
+            sev = "low"
+
+        if sev == "high":
+            action = ("Tight periodicity + non-CDN parent + not filtered is the "
+                      "textbook DNS-based C2 shape. Pivot on the client, capture the "
+                      "destination for IOC enrichment, and check the host's process tree.")
+        elif sev == "info":
+            action = ("Regular interval but the parent is known SaaS infra — almost "
+                      "certainly a health-check or telemetry heartbeat. Worth confirming "
+                      "the pattern matches the vendor's documented cadence.")
+        else:
+            action = ("Periodic enough to surface but not tight enough for high "
+                      "confidence. Real beacons persist — re-check tomorrow.")
+
+        findings.append({
+            "id": f"beacon-{idx}",
+            "title": f"Periodic queries: {client_name} → {base_domain}",
+            "severity": sev,
+            "mitre": {"id": "T1071.004", "name": "Application Layer Protocol: DNS"},
+            "summary": (
+                f"{client_name} queried {base_domain} {len(timestamps):,} times "
+                f"in the last {days}d at {interval_str} intervals "
+                f"(jitter CV={cv * 100:.0f}%)."
+            ),
+            "evidence": [
+                {"label": "Client", "value": client_name},
+                {"label": "Destination", "value": base_domain, "mono": True},
+                {"label": "Window", "value": f"{days} day(s)"},
+                {"label": "First → last", "value":
+                    f"{timestamps[0].astimezone().strftime('%Y-%m-%d %H:%M')} → "
+                    f"{timestamps[-1].astimezone().strftime('%Y-%m-%d %H:%M')}"},
+            ],
+            "metrics": {
+                "Events": len(timestamps),
+                "Mean interval": interval_str,
+                "Jitter (CV)": f"{cv * 100:.1f}%",
+                "Filtered": "yes" if any_filtered else "no",
+            },
+            "action": action,
+            "drill": {"type": "client_summary",
+                      "params": {"ip": ip, "qh": base_domain}},
+        })
+        idx += 1
+        if idx >= 15:
+            break
+    return findings
+
+
 _SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3}
 
 
@@ -1884,7 +2069,8 @@ def compute_findings() -> dict:
     conn = get_connection()
     try:
         all_findings = []
-        for detector in (_detect_tunneling, _detect_dga,
+        for detector in (_detect_beaconing,
+                         _detect_tunneling, _detect_dga,
                          _detect_new_high_traffic,
                          _detect_chatty_blocked_clients,
                          _detect_rare_query_types):

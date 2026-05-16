@@ -19,7 +19,7 @@ from typing import Optional
 from database import (
     init_database, insert_log_entries, condense_logs,
     update_client_names, set_metadata, get_metadata,
-    get_ignored_domains_set
+    get_ignored_domains_set, prune_raw_queries,
 )
 
 # Directories
@@ -545,6 +545,11 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
         condense_result = condense_logs()
         if condense_result['rows_before'] != condense_result['rows_after']:
             print(f"  Condensed: {condense_result['rows_before']:,} -> {condense_result['rows_after']:,} rows")
+
+        # Trim raw_queries past the retention window
+        pruned = prune_raw_queries()
+        if pruned > 0:
+            print(f"  Pruned {pruned:,} raw_queries rows past retention window")
 
     # Get latest timestamp
     latest_ts = unique_entries[-1].get(log_config["timestamp_field"]) if unique_entries else None
