@@ -184,10 +184,30 @@ def get_client_names_map(conn: duckdb.DuckDBPyConnection) -> dict[str, str]:
     return {row[0]: row[1] for row in results}
 
 
+# Batch size for chunked executemany. One mega-batch causes DuckDB to grind
+# through a huge WAL transaction with no visible progress; chunking keeps
+# memory flat, lets us print progress, and avoids the long stalls that
+# previously made cold ingest look hung.
+INSERT_BATCH_SIZE = 10_000
+
+
+def _batch_executemany(conn, sql: str, rows: list, label: str) -> None:
+    """Stream rows through executemany in fixed-size batches with progress."""
+    total = len(rows)
+    if total == 0:
+        return
+    for i in range(0, total, INSERT_BATCH_SIZE):
+        batch = rows[i:i + INSERT_BATCH_SIZE]
+        conn.executemany(sql, batch)
+        done = i + len(batch)
+        if done == total or done % (INSERT_BATCH_SIZE * 10) == 0:
+            print(f"    {label}: {done:,} / {total:,}", flush=True)
+
+
 def insert_log_entries(entries: list[dict], conn: Optional[duckdb.DuckDBPyConnection] = None) -> int:
     """
-    Insert log entries into the database (uncondensed, with count=1 each).
-    Call condense_logs() after to aggregate duplicates.
+    Insert log entries into both query_logs (condensed) and raw_queries (hot).
+    Call condense_logs() after to aggregate query_logs duplicates.
 
     Args:
         entries: List of log entry dictionaries from AdGuard
@@ -229,20 +249,18 @@ def insert_log_entries(entries: list[dict], conn: Optional[duckdb.DuckDBPyConnec
             dt, ip, client, domain, query_type, is_filtered, filter_rule,
         ))
 
-    if condensed_rows:
-        conn.executemany("""
-            INSERT INTO query_logs
-            (date, ip, client, domain, query_type, client_protocol,
-             upstream, is_filtered, filter_rule, count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, condensed_rows)
+    _batch_executemany(conn, """
+        INSERT INTO query_logs
+        (date, ip, client, domain, query_type, client_protocol,
+         upstream, is_filtered, filter_rule, count)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, condensed_rows, "query_logs")
 
-    if raw_rows:
-        conn.executemany("""
-            INSERT INTO raw_queries
-            (timestamp, ip, client, domain, query_type, is_filtered, filter_rule)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, raw_rows)
+    _batch_executemany(conn, """
+        INSERT INTO raw_queries
+        (timestamp, ip, client, domain, query_type, is_filtered, filter_rule)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, raw_rows, "raw_queries")
 
     if should_close:
         conn.close()
