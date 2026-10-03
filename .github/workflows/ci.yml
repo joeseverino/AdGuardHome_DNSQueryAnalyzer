@@ -1,0 +1,14 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  cordon:
+    uses: joeseverino/cordon/.github/workflows/cordon-gate.yml@v2

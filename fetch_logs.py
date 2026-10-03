@@ -13,13 +13,15 @@ import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 # Import database module
 from database import (
-    init_database, insert_log_entries, condense_logs,
-    update_client_names, set_metadata, get_metadata,
-    get_ignored_domains_set, prune_raw_queries,
+    condense_logs,
+    get_ignored_domains_set,
+    init_database,
+    insert_log_entries,
+    prune_raw_queries,
+    update_client_names,
 )
 
 # Directories
@@ -108,12 +110,12 @@ def save_fetch_history(history: dict) -> None:
         json.dump(history, f, indent=2)
 
 
-def format_timestamp(ts: Optional[str]) -> str:
+def format_timestamp(ts: str | None) -> str:
     """Format an ISO timestamp for display."""
     if not ts:
         return "Never"
     try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(ts)
         return dt.strftime("%Y-%m-%d %H:%M:%S %Z")
     except (ValueError, AttributeError):
         return ts
@@ -122,11 +124,11 @@ def format_timestamp(ts: Optional[str]) -> str:
 def ssh_command(cmd: str) -> tuple[int, str, str]:
     """Execute a command on the remote router via SSH."""
     ssh_cmd = ["ssh", "-p", str(SSH_PORT), f"{SSH_USER}@{SSH_HOST}", cmd]
-    result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+    result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=False)
     return result.returncode, result.stdout, result.stderr
 
 
-def _read_local_file(path: str, offset: int = 0, size: int = -1) -> Optional[str]:
+def _read_local_file(path: str, offset: int = 0, size: int = -1) -> str | None:
     """Read a local file, optionally a chunk starting at offset. None on error."""
     try:
         with open(path, "rb") as f:
@@ -138,7 +140,7 @@ def _read_local_file(path: str, offset: int = 0, size: int = -1) -> Optional[str
         return None
 
 
-def fetch_remote_file(remote_path: str) -> Optional[str]:
+def fetch_remote_file(remote_path: str) -> str | None:
     """Fetch full contents of the source file (local or via SSH)."""
     if USE_LOCAL:
         content = _read_local_file(remote_path)
@@ -157,7 +159,7 @@ def check_remote_file_exists(remote_path: str) -> bool:
     return returncode == 0
 
 
-def get_remote_file_size(remote_path: str) -> Optional[int]:
+def get_remote_file_size(remote_path: str) -> int | None:
     """Get the size of the source file in bytes (local or via SSH)."""
     if USE_LOCAL:
         try:
@@ -173,7 +175,7 @@ def get_remote_file_size(remote_path: str) -> Optional[int]:
     return None
 
 
-def get_remote_first_line(remote_path: str) -> Optional[str]:
+def get_remote_first_line(remote_path: str) -> str | None:
     """Get the first line of the source file (local or via SSH)."""
     if USE_LOCAL:
         try:
@@ -188,7 +190,7 @@ def get_remote_first_line(remote_path: str) -> Optional[str]:
     return None
 
 
-def get_first_timestamp(line: str, timestamp_field: str) -> Optional[str]:
+def get_first_timestamp(line: str, timestamp_field: str) -> str | None:
     """Extract timestamp from a JSON line."""
     try:
         entry = json.loads(line)
@@ -197,7 +199,7 @@ def get_first_timestamp(line: str, timestamp_field: str) -> Optional[str]:
         return None
 
 
-def fetch_remote_file_from_offset(remote_path: str, offset: int) -> Optional[str]:
+def fetch_remote_file_from_offset(remote_path: str, offset: int) -> str | None:
     """Fetch source file contents starting from a byte offset (local or via SSH)."""
     if USE_LOCAL:
         content = _read_local_file(remote_path, offset)
@@ -208,7 +210,7 @@ def fetch_remote_file_from_offset(remote_path: str, offset: int) -> Optional[str
     return None
 
 
-def fetch_remote_chunk(remote_path: str, offset: int, size: int) -> Optional[str]:
+def fetch_remote_chunk(remote_path: str, offset: int, size: int) -> str | None:
     """
     Fetch a chunk of the source file (local or via SSH).
 
@@ -236,7 +238,7 @@ def fetch_file_in_chunks(
     offset: int,
     file_size: int,
     timestamp_field: str,
-    after_timestamp: Optional[str],
+    after_timestamp: str | None,
     chunk_size: int = FETCH_CHUNK_SIZE
 ) -> tuple[list[dict], int]:
     """
@@ -306,10 +308,10 @@ def fetch_file_in_chunks(
             except json.JSONDecodeError:
                 # First line of first chunk may be partial (resumed mid-line)
                 if is_first_chunk and i == 0:
-                    print(f"      Discarded partial first record (resumed mid-line)")
+                    print("      Discarded partial first record (resumed mid-line)")
                 # Last line of last chunk may be partial (write in progress)
                 elif is_last_chunk and i == len(lines) - 1:
-                    print(f"      Discarded partial last record (truncated during read)")
+                    print("      Discarded partial last record (truncated during read)")
                 else:
                     print(f"      Warning: Skipped malformed entry in chunk {chunk_num}")
                 continue
@@ -329,7 +331,7 @@ def fetch_file_in_chunks(
 def parse_ndjson_entries(
     content: str,
     timestamp_field: str,
-    after_timestamp: Optional[str] = None,
+    after_timestamp: str | None = None,
     from_offset: bool = False
 ) -> tuple[list[dict], int]:
     """
@@ -376,12 +378,12 @@ def parse_ndjson_entries(
 
             if is_first and from_offset:
                 # Expected: partial first line when reading from offset
-                print(f"      Discarded partial first record (resumed mid-line)")
+                print("      Discarded partial first record (resumed mid-line)")
                 bytes_consumed += line_bytes
             elif is_last:
                 # Expected: partial last line from reading during active write
                 # Don't count these bytes - we'll re-read them next time
-                print(f"      Discarded partial last record (truncated during read)")
+                print("      Discarded partial last record (truncated during read)")
             else:
                 # Unexpected: malformed entry in the middle
                 print(f"      Warning: Skipped malformed entry at line {i + 1}")
@@ -393,7 +395,7 @@ def parse_ndjson_entries(
     return entries, bytes_consumed
 
 
-def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Optional[str], dict]:
+def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, str | None, dict]:
     """
     Fetch a specific log type from the router.
 
@@ -407,7 +409,7 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
     last_fetch = history.get(log_name, {}).get("last_entry_timestamp")
     if last_fetch:
         print(f"  Last entry timestamp: {format_timestamp(last_fetch)}")
-        print(f"  Fetching entries after this time...")
+        print("  Fetching entries after this time...")
     else:
         print("  First fetch - retrieving all available entries...")
 
@@ -426,10 +428,10 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
     if not primary_exists:
         if rotated_exists:
             print(f"  Note: {primary_file} does not exist (only rotated file found)")
-            print(f"        AdGuard Home may have recently restarted and is buffering")
-            print(f"        new queries in memory (flushes after ~1000 queries).")
+            print("        AdGuard Home may have recently restarted and is buffering")
+            print("        new queries in memory (flushes after ~1000 queries).")
         else:
-            print(f"  Warning: No querylog files found on router!")
+            print("  Warning: No querylog files found on router!")
 
     # Fetch all remote log files
     all_entries = []
@@ -442,13 +444,13 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
         # Check if file exists and get its size
         file_size = get_remote_file_size(remote_file)
         if file_size is None:
-            print(f"    File not found or empty")
+            print("    File not found or empty")
             continue
 
         # Get first line to detect rotation
         first_line = get_remote_first_line(remote_file)
         if not first_line:
-            print(f"    File not found or empty")
+            print("    File not found or empty")
             continue
 
         current_first_ts = get_first_timestamp(first_line, timestamp_field)
@@ -458,19 +460,17 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
         stored_first_ts = stored_state.get("first_timestamp")
         stored_offset = stored_state.get("byte_offset", 0)
 
-        use_offset = False
         offset = 0
 
         if stored_first_ts and current_first_ts == stored_first_ts and stored_offset > 0:
             # File hasn't rotated, we can resume from offset
             if stored_offset < file_size:
-                use_offset = True
                 offset = stored_offset
                 bytes_to_read = file_size - offset
                 print(f"    Resuming from byte {offset:,} (reading {bytes_to_read:,} of {file_size:,} bytes)")
             else:
                 # No new data since last fetch
-                print(f"    No new data (file size unchanged)")
+                print("    No new data (file size unchanged)")
                 new_file_states[file_key] = {
                     "first_timestamp": current_first_ts,
                     "byte_offset": stored_offset
@@ -478,7 +478,7 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
                 continue
         else:
             if stored_first_ts and current_first_ts != stored_first_ts:
-                print(f"    File rotated, reading from beginning")
+                print("    File rotated, reading from beginning")
             print(f"    Reading full file ({file_size:,} bytes)")
 
         # Fetch the file content using chunked reading
@@ -502,7 +502,7 @@ def fetch_log(log_name: str, log_config: dict, history: dict) -> tuple[int, Opti
                 "byte_offset": new_offset
             }
         else:
-            print(f"    File not found or empty")
+            print("    File not found or empty")
 
     if not all_entries:
         print("  No new entries found.")
@@ -594,7 +594,7 @@ def fetch_client_names_from_router() -> dict[str, str]:
                 if ">" in entry:
                     parts = entry.split(">")
                     if len(parts) >= 3:
-                        mac, ip, hostname = parts[0], parts[1], parts[2]
+                        ip, hostname = parts[1], parts[2]
                         if hostname and ip:
                             ip_to_hostname[ip] = hostname
 
