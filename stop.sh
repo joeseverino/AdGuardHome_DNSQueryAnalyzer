@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # stop.sh - Stop the AdGuard Home Log Summary web service
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

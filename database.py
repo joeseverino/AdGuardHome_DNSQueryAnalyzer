@@ -7,11 +7,10 @@ This module provides:
 - Query functions for raw logs and aggregated summaries
 """
 
-import duckdb
-import json
-from pathlib import Path
-from typing import Optional
 from datetime import datetime
+from pathlib import Path
+
+import duckdb
 
 # Database file location
 SCRIPT_DIR = Path(__file__).parent
@@ -165,14 +164,14 @@ def parse_timestamp(ts_str: str) -> tuple[datetime, str]:
                 tz = rest[tz_pos:]
                 ts_str = f"{base}.{fractional}{tz}"
 
-        dt = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        dt = datetime.fromisoformat(ts_str)
         # Normalize to system local TZ before extracting the date. Without
         # this, UTC-stamped queries logged late evening local time become
         # next-day rows in the DB and break "today" comparisons in the UI.
         # The container's TZ env var controls what "local" means.
         date_str = dt.astimezone().strftime('%Y-%m-%d')
         return dt, date_str
-    except Exception:
+    except (ValueError, TypeError, IndexError):
         # Fallback: try to extract date from string
         date_str = ts_str[:10] if len(ts_str) >= 10 else 'unknown'
         return datetime.now(), date_str
@@ -204,7 +203,7 @@ def _batch_executemany(conn, sql: str, rows: list, label: str) -> None:
             print(f"    {label}: {done:,} / {total:,}", flush=True)
 
 
-def insert_log_entries(entries: list[dict], conn: Optional[duckdb.DuckDBPyConnection] = None) -> int:
+def insert_log_entries(entries: list[dict], conn: duckdb.DuckDBPyConnection | None = None) -> int:
     """
     Insert log entries into both query_logs (condensed) and raw_queries (hot).
     Call condense_logs() after to aggregate query_logs duplicates.
@@ -290,7 +289,7 @@ def prune_raw_queries(days_to_keep: int = RAW_RETENTION_DAYS) -> int:
         conn.close()
 
 
-def condense_logs(conn: Optional[duckdb.DuckDBPyConnection] = None) -> dict:
+def condense_logs(conn: duckdb.DuckDBPyConnection | None = None) -> dict:
     """
     Condense query_logs by aggregating duplicate rows.
 
@@ -436,7 +435,7 @@ def update_client_names(ip_to_hostname: dict[str, str]):
     conn.close()
 
 
-def get_last_entry_date() -> Optional[str]:
+def get_last_entry_date() -> str | None:
     """Get the most recent date in the database."""
     conn = get_connection()
     result = conn.execute("""
@@ -458,7 +457,7 @@ def set_metadata(key: str, value: str):
     conn.close()
 
 
-def get_metadata(key: str) -> Optional[str]:
+def get_metadata(key: str) -> str | None:
     """Get a metadata value."""
     conn = get_connection()
     result = conn.execute("""
@@ -473,18 +472,18 @@ def get_metadata(key: str) -> Optional[str]:
 # ============================================================================
 
 def query_client_summary(
-    date: Optional[str] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    ip: Optional[str] = None,
-    client: Optional[str] = None,
-    domain: Optional[str] = None,
-    query_type: Optional[str] = None,
-    client_protocol: Optional[str] = None,
-    is_filtered: Optional[bool] = None,
-    filter_rule: Optional[str] = None,
-    count_gte: Optional[int] = None,
-    count_lte: Optional[int] = None,
+    date: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    ip: str | None = None,
+    client: str | None = None,
+    domain: str | None = None,
+    query_type: str | None = None,
+    client_protocol: str | None = None,
+    is_filtered: bool | None = None,
+    filter_rule: str | None = None,
+    count_gte: int | None = None,
+    count_lte: int | None = None,
     sort_by: str = 'count',
     sort_asc: bool = False,
     page: int = 1,
@@ -614,13 +613,13 @@ def query_client_summary(
 
 
 def query_domain_summary(
-    date: Optional[str] = None,
-    domain: Optional[str] = None,
-    query_type: Optional[str] = None,
-    client_protocol: Optional[str] = None,
-    is_filtered: Optional[bool] = None,
-    count_gte: Optional[int] = None,
-    count_lte: Optional[int] = None,
+    date: str | None = None,
+    domain: str | None = None,
+    query_type: str | None = None,
+    client_protocol: str | None = None,
+    is_filtered: bool | None = None,
+    count_gte: int | None = None,
+    count_lte: int | None = None,
     sort_by: str = 'count',
     sort_asc: bool = False,
     page: int = 1,
@@ -728,14 +727,14 @@ def query_domain_summary(
 
 
 def query_base_domain_summary(
-    domain: Optional[str] = None,
-    query_type: Optional[str] = None,
-    client_protocol: Optional[str] = None,
-    is_filtered: Optional[bool] = None,
-    count_gte: Optional[int] = None,
-    count_lte: Optional[int] = None,
-    max_count_gte: Optional[int] = None,
-    max_count_lte: Optional[int] = None,
+    domain: str | None = None,
+    query_type: str | None = None,
+    client_protocol: str | None = None,
+    is_filtered: bool | None = None,
+    count_gte: int | None = None,
+    count_lte: int | None = None,
+    max_count_gte: int | None = None,
+    max_count_lte: int | None = None,
     sort_by: str = 'count',
     sort_asc: bool = False,
     page: int = 1,
@@ -961,7 +960,7 @@ def delete_logs_by_domain(domain: str) -> dict:
 # Ignored Domains Management
 # ============================================================================
 
-def add_ignored_domain(domain: str, notes: str = None) -> bool:
+def add_ignored_domain(domain: str, notes: str | None = None) -> bool:
     """
     Add a domain to the ignored_domains table.
 
@@ -981,7 +980,7 @@ def add_ignored_domain(domain: str, notes: str = None) -> bool:
         """, [domain, notes])
         conn.close()
         return True
-    except Exception:
+    except duckdb.ConstraintException:
         conn.close()
         return False
 
@@ -998,18 +997,16 @@ def remove_ignored_domain(domain: str) -> bool:
     """
     conn = get_connection()
 
-    result = conn.execute("""
+    # DuckDB's DELETE returns the number of rows it removed.
+    deleted = conn.execute("""
         DELETE FROM ignored_domains WHERE domain = ?
-    """, [domain])
-
-    # Check if any rows were affected
-    deleted = conn.execute("SELECT changes()").fetchone()[0]
+    """, [domain]).fetchone()[0]
 
     conn.close()
     return deleted > 0
 
 
-def get_ignored_domains(search: str = None) -> list[dict]:
+def get_ignored_domains(search: str | None = None) -> list[dict]:
     """
     Get all ignored domains with their log counts.
 
@@ -1188,10 +1185,8 @@ def dashboard_queries_over_time(days: int = 30) -> dict:
     Args:
         days: Number of days to include, ending today.
     """
-    if days < 1:
-        days = 1
-    if days > 365:
-        days = 365
+    days = max(days, 1)
+    days = min(days, 365)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1223,10 +1218,8 @@ def dashboard_first_seen(limit: int = 50) -> dict:
     This is the security-analyst panel: "what just started talking that has
     never talked before?" Excludes domains on the ignore list.
     """
-    if limit < 1:
-        limit = 1
-    if limit > 500:
-        limit = 500
+    limit = max(limit, 1)
+    limit = min(limit, 500)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1286,14 +1279,10 @@ def dashboard_top_filter_rules(days: int = 7, limit: int = 15) -> dict:
     Surfaces which blocklist rules are pulling weight, and inversely makes it
     easier to spot rules that *aren't* firing (low position vs expectation).
     """
-    if days < 1:
-        days = 1
-    if days > 90:
-        days = 90
-    if limit < 1:
-        limit = 1
-    if limit > 100:
-        limit = 100
+    days = max(days, 1)
+    days = min(days, 90)
+    limit = max(limit, 1)
+    limit = min(limit, 100)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1334,14 +1323,10 @@ def dashboard_top_blocked_clients(days: int = 7, limit: int = 10) -> dict:
     telemetry endpoints, or (b) something is misbehaving and worth a look.
     Both are useful signals.
     """
-    if days < 1:
-        days = 1
-    if days > 90:
-        days = 90
-    if limit < 1:
-        limit = 1
-    if limit > 100:
-        limit = 100
+    days = max(days, 1)
+    days = min(days, 90)
+    limit = max(limit, 1)
+    limit = min(limit, 100)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1385,14 +1370,10 @@ def dashboard_top_blocked_domains(days: int = 7, limit: int = 10) -> dict:
     are reaching for. Useful for "what's my network *actually* talking to
     that I don't want it to."
     """
-    if days < 1:
-        days = 1
-    if days > 90:
-        days = 90
-    if limit < 1:
-        limit = 1
-    if limit > 100:
-        limit = 100
+    days = max(days, 1)
+    days = min(days, 90)
+    limit = max(limit, 1)
+    limit = min(limit, 100)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1465,10 +1446,8 @@ def dashboard_suspicious_subdomains(limit: int = 15) -> dict:
     The point is to make the long-tail visible so a human can eyeball it.
     Real detection comes from entropy + n-gram scoring (iteration 2).
     """
-    if limit < 1:
-        limit = 1
-    if limit > 100:
-        limit = 100
+    limit = max(limit, 1)
+    limit = min(limit, 100)
     conn = get_connection()
     try:
         rows = conn.execute(f"""
@@ -1903,9 +1882,7 @@ def _detect_rare_query_types(conn) -> list[dict]:
     findings = []
     for i, (qt, hits, ud, uc) in enumerate(rows):
         hits, ud, uc = int(hits), int(ud), int(uc)
-        if qt == "TXT" and hits >= 500:
-            sev = "medium"
-        elif qt in ("NULL", "ANY", "AXFR") and hits >= 100:
+        if qt == "TXT" and hits >= 500 or qt in ("NULL", "ANY", "AXFR") and hits >= 100:
             sev = "medium"
         else:
             sev = "low"
@@ -2094,7 +2071,7 @@ def compute_findings() -> dict:
                          _detect_rare_query_types):
             try:
                 all_findings.extend(detector(conn))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - one detector failing must not blank the tab
                 # One detector failure shouldn't kill the whole tab
                 print(f"[findings] {detector.__name__} failed: {e}")
 

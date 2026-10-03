@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # start.sh - Start the AdGuard Home Log Summary web service
 # Handles port conflicts by finding the next available port
 
@@ -12,7 +12,8 @@ MAX_PORT=8099  # Will try ports 8080-8099
 # Check if our specific service is already running
 is_running() {
     if [[ -f "$PID_FILE" ]]; then
-        local pid=$(cat "$PID_FILE")
+        local pid
+        pid=$(cat "$PID_FILE")
         if ps -p "$pid" > /dev/null 2>&1; then
             # Verify it's actually our uvicorn process
             if ps -p "$pid" -o command= | grep -q "web_service"; then
@@ -45,7 +46,7 @@ find_available_port() {
 }
 
 # Main logic
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR" || exit 1
 
 # Check if already running
 if is_running; then
@@ -69,11 +70,7 @@ fi
 
 # Start the service
 echo "Starting $APP_NAME on port $PORT..."
-python3 -c "
-import uvicorn
-from web_service import app
-uvicorn.run(app, host='0.0.0.0', port=$PORT)
-" &
+uv run --quiet uvicorn web_service:app --host "${WEB_HOST:-127.0.0.1}" --port "$PORT" &
 
 # Save PID and port
 echo $! > "$PID_FILE"

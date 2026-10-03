@@ -1,0 +1,9 @@
+.git
+.venv*
+.env
+AppData
+LogData
+images
+tests
+*.duckdb
+__pycache__

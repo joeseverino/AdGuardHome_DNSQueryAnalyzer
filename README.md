@@ -43,41 +43,25 @@ A toolkit for fetching, storing, and analyzing DNS query logs from AdGuard Home 
 
 ## Prerequisites
 
-- Python 3.10+
-- SSH access to the router running AdGuard Home
+- [uv](https://docs.astral.sh/uv/) (installs Python 3.13 itself)
+- SSH access to the router running AdGuard Home, or a local query log
 - AdGuard Home query log files accessible on the router
 
 ## Installation
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd AdguardHomeLogs
+   git clone https://github.com/joeseverino/AdGuardHome_DNSQueryAnalyzer.git
+   cd AdGuardHome_DNSQueryAnalyzer
    ```
 
 2. Install dependencies:
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
-3. Create a `.env` file with your configuration:
-   ```
-   # Router SSH connection
-   ROUTER_SSH_HOST=192.168.1.1
-   ROUTER_SSH_PORT=22
-   ROUTER_SSH_USER=admin
-
-   # AdGuard Home paths on router
-   ADGUARD_QUERY_LOG=/opt/AdGuardHome/data/querylog.json
-   DHCP_LEASES_PATH=/var/lib/misc/dnsmasq.leases
-
-   # Web server settings (optional)
-   WEB_HOST=0.0.0.0
-   WEB_PORT=8080git 
-
-   # Fetch settings (optional)
-   FETCH_CHUNK_SIZE=1048576
-   ```
+3. Copy `.env.example` to `.env` and fill it in. Leave `ROUTER_SSH_HOST` blank
+   to read a local query log; set it to fetch over SSH.
 
 ## Usage
 
@@ -90,7 +74,7 @@ Start the web server:
 ./start.sh
 
 # Or run directly
-python web_service.py
+uv run python web_service.py
 ```
 
 The `start.sh` script will:
@@ -111,10 +95,10 @@ Click **Update Logs** in the web UI, or run from command line:
 
 ```bash
 # Interactive mode (prompts for confirmation)
-python fetch_logs.py
+uv run python fetch_logs.py
 
 # Non-interactive mode
-python fetch_logs.py -y
+uv run python fetch_logs.py -y
 ```
 
 The fetcher:
@@ -122,6 +106,24 @@ The fetcher:
 - Stores entries directly into DuckDB
 - Updates client name mappings from DHCP leases
 - Handles log rotation automatically
+
+### Container
+
+The `Dockerfile` builds the dashboard from the lockfile. It reads `.env` from
+`/app/.env` and keeps its database in `/app/AppData`, so mount both:
+
+```bash
+docker build -t dns-analyzer .
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v "$PWD/.env:/app/.env:ro" -v "$PWD/AppData:/app/AppData" dns-analyzer
+```
+
+### Development
+
+```bash
+uv run pytest
+uv run ruff check .
+```
 
 # API Endpoints
 
@@ -172,13 +174,15 @@ The fetcher:
 ## Directory Structure
 
 ```
-AdguardHomeLogs/
+AdGuardHome_DNSQueryAnalyzer/
 ├── database.py            # DuckDB database module
 ├── fetch_logs.py          # Log fetcher script
 ├── web_service.py         # FastAPI web service
 ├── start.sh               # Start web service
 ├── stop.sh                # Stop web service
-├── requirements.txt       # Python dependencies
+├── pyproject.toml         # Dependencies (locked in uv.lock)
+├── Dockerfile             # Container build
+├── tests/                 # API smoke tests
 ├── static/
 │   └── index.html         # Web dashboard
 ├── AppData/
